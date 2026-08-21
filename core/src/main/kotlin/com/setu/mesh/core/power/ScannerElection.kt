@@ -57,12 +57,15 @@ object ScannerElection {
         return ranked.take(quota).any { it.id == selfId }
     }
 
+    @Volatile
+    var disableBanding: Boolean = false
+
     private fun rankOf(id: NodeId, battery: Int, charging: Boolean, epoch: Long): Rank = Rank(
         id = id,
         // Coarse 10% bands rather than the raw percentage: without banding, the single
         // best-charged phone would scan every epoch forever. Banding lets everyone within
         // 10% of each other take turns via the epoch-mixed tiebreak.
-        band = if (charging) BAND_CHARGING else battery / 10,
+        band = if (charging) BAND_CHARGING else if (disableBanding) battery else battery / 10,
         tiebreak = rotate(id.raw, epoch),
     )
 

@@ -95,8 +95,12 @@ object ForwardingPolicy {
         }
     }
 
+    @Volatile
+    var forceEnergyGateOne: Boolean = false
+
     /** Step function on our own remaining battery. */
     fun energyGate(batteryPercent: Int, charging: Boolean, critical: Boolean): Double {
+        if (forceEnergyGateOne) return 1.0
         if (charging) return 1.0
         return when {
             batteryPercent >= 40 -> 1.0
