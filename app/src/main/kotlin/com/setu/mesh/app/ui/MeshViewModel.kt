@@ -19,10 +19,20 @@ class MeshViewModel {
     var carried by mutableStateOf<List<SosBeacon>>(emptyList())
         private set
 
+    /**
+     * Refreshed on the same tick as [carried] rather than read during composition. Reading it
+     * inline in the composable worked only by accident: it is a plain field, so nothing would
+     * recompose when the first GPS fix landed -- the map would stay on "waiting for fix" until
+     * some unrelated state change happened to trigger a redraw.
+     */
+    var selfPosition by mutableStateOf<GeoPoint?>(null)
+        private set
+
     fun refresh() {
         // Only SOS beacons are "reports" to a responder -- RECEIPT/SAFE/etc. are protocol
         // plumbing this screen has no business surfacing.
         carried = SetuService.carriedMessages().filter { it.type == MessageType.SOS }
+        selfPosition = SetuService.selfPosition()
     }
 }
 

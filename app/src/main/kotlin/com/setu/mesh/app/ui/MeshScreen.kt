@@ -51,7 +51,7 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
     val sorted = sortForResponder(viewModel.carried, selfOriginRaw)
     val known = sorted.filter { hasKnownPosition(it) }
     val unknown = sorted.filter { !hasKnownPosition(it) }
-    val selfPosition = SetuService.selfPosition()
+    val selfPosition = viewModel.selfPosition
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (sorted.isEmpty()) {

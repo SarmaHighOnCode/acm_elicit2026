@@ -30,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -59,6 +60,7 @@ class SetuService : LifecycleService() {
     private var meshNode: MeshNode? = null
     private var meshJob: Job? = null
     private var notificationJob: Job? = null
+    private var snapshotJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -172,7 +174,13 @@ class SetuService : LifecycleService() {
 
         meshJob = scope.launch { node.run() }
 
-        notificationJob = scope.launch {
+        // Snapshot propagation and notification refresh are deliberately two separate
+        // coroutines. Doing both in one collect with a trailing delay throttles the *snapshot*
+        // too, because node.snapshot is a conflated StateFlow: the collector sleeps, intermediate
+        // values are dropped, and the UI only learns about state changes every few seconds. That
+        // is unacceptable on the SOS screen, where the whole point is that tapping SOS visibly
+        // does something immediately.
+        snapshotJob = scope.launch {
             node.snapshot.collect { snap ->
                 _snapshot.value = snap
                 Log.i(
@@ -182,10 +190,15 @@ class SetuService : LifecycleService() {
                         "advertising=${snap.advertising} scanning=${snap.scanning} " +
                         "ownSosDelivered=${snap.ownSosDelivered}",
                 )
-                updateNotification(snap)
-                // Notification updates are the one thing here worth rate-limiting: churning
-                // the system notification on every protocol tick is itself a battery cost,
-                // which would be an embarrassing thing to get wrong in this particular app.
+            }
+        }
+
+        // Notifications, by contrast, genuinely are worth rate-limiting: churning the system
+        // notification on every protocol tick is itself a battery cost, which would be an
+        // embarrassing thing to get wrong in this particular app.
+        notificationJob = scope.launch {
+            while (isActive) {
+                _snapshot.value?.let { updateNotification(it) }
                 delay(NOTIFICATION_UPDATE_MIN_INTERVAL_MILLIS)
             }
         }
@@ -198,6 +211,8 @@ class SetuService : LifecycleService() {
         meshJob = null
         notificationJob?.cancel()
         notificationJob = null
+        snapshotJob?.cancel()
+        snapshotJob = null
         val link = androidLink
         androidLink = null
         androidNodeHost?.shutdown()

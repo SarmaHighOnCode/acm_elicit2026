@@ -101,14 +101,15 @@ class World(
             val plan = receiver.meshNode.planNow(now)
             if (!plan.scanThisEpoch || !plan.inRendezvousWindow) continue
 
-            val receiverPos = receiver.host.position() ?: continue
+            // SimHost narrows NodeHost's nullable position() contract to always-non-null.
+            val receiverPos = receiver.host.position()
 
             for (sender in nodes) {
                 if (sender === receiver) continue
                 if (sender.battery.isDead) continue
                 if (sender.link.currentBeacons.isEmpty()) continue
 
-                val senderPos = sender.host.position() ?: continue
+                val senderPos = sender.host.position()
                 val distMetres = distanceMetres(receiverPos, senderPos)
                 if (distMetres > rangeMetres) continue
 

@@ -144,6 +144,21 @@ class BleAdvertiser(
         return true
     }
 
+    /**
+     * Retune mode/TX power without changing the beacon set, restarting the radio so the new
+     * settings actually take effect. Needed because [setBeacons] deliberately skips no-op
+     * restarts: with a stable outbox the beacon content may never change, so a power-tier
+     * change would otherwise never reach the radio.
+     */
+    fun reapplyWith(mode: Int, txPower: Int) {
+        handler.post {
+            if (mode == currentMode && txPower == currentTxPower) return@post
+            currentMode = mode
+            currentTxPower = txPower
+            if (currentBeacons.isNotEmpty()) applyWindow()
+        }
+    }
+
     fun stop() {
         handler.post {
             handler.removeCallbacks(rotate)

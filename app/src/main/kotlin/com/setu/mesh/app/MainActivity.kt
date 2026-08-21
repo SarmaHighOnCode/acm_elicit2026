@@ -19,13 +19,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -51,7 +51,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun SetuApp() {
-    var serviceRunning by remember { mutableStateOf(false) }
+    var serviceRunning by rememberSaveable { mutableStateOf(false) }
 
     if (!serviceRunning) {
         PermissionGate(onAllGranted = { serviceRunning = true })
@@ -64,10 +64,10 @@ private val TAB_TITLES = listOf("SOS", "Mesh", "Mesh Lab", "Diagnostics")
 
 @Composable
 private fun RunningScreen() {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        TabRow(selectedTabIndex = selectedTab) {
+        PrimaryTabRow(selectedTabIndex = selectedTab) {
             TAB_TITLES.forEachIndexed { index, title ->
                 Tab(
                     selected = selectedTab == index,

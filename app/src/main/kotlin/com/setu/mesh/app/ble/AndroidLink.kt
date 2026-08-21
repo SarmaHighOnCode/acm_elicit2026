@@ -12,6 +12,7 @@ import com.setu.mesh.core.link.Link
 import com.setu.mesh.core.link.LinkCapabilities
 import com.setu.mesh.core.link.LinkEvent
 import com.setu.mesh.core.link.PeerHandle
+import com.setu.mesh.core.link.RadioProfile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,14 +28,11 @@ import kotlinx.coroutines.launch
  * decision, and routing lives in `:core`. If this class ever imports `com.setu.mesh.core.model`
  * or `com.setu.mesh.core.codec`, that is the layering breaking.
  *
- * A note on radio mode: `Link.setAdvertisedBeacons` / `Link.scanFor` take no mode parameter —
- * the interface is frozen and does not expose per-tier radio tuning through the call signature.
- * So the mapping described in `docs/tasks/B4-android-link.md` (BRIDGE -> LOW_LATENCY, EMBER ->
- * LOW_POWER, ...) cannot be wired without changing `Link`, which this class must not do.
- * [DEFAULT_ADVERTISE_MODE]/[DEFAULT_SCAN_MODE] are therefore fixed, reasonable middle-ground
- * settings rather than tier-adaptive ones. Per-tier tuning is a real gap, not an oversight, and
- * belongs on the roadmap as an additive change to `Link` (e.g. a mode hint parameter) rather than
- * a workaround here.
+ * Radio tuning arrives via [applyRadioProfile] rather than as a parameter on every call, so the
+ * engine can change the power tier without this class ever learning what a "tier" is. The
+ * profile is cached and applied to subsequent advertising and scanning, and re-applied
+ * immediately on change -- a stable outbox may never trigger another `setAdvertisedBeacons`
+ * content change, so waiting for one would silently strand the old tuning.
  */
 class AndroidLink(
     context: Context,
@@ -105,17 +103,62 @@ class AndroidLink(
         }
     }
 
+    /**
+     * Current radio tuning, driven by [applyRadioProfile]. Starts balanced so a transport used
+     * before the engine ever reports a profile still behaves sensibly.
+     */
+    @Volatile
+    private var advertiseMode: Int = AdvertiseSettings.ADVERTISE_MODE_BALANCED
+
+    @Volatile
+    private var txPower: Int = AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM
+
+    @Volatile
+    private var scanMode: Int = ScanSettings.SCAN_MODE_BALANCED
+
+    override suspend fun applyRadioProfile(profile: RadioProfile) {
+        when (profile) {
+            RadioProfile.HIGH_PERFORMANCE -> {
+                advertiseMode = AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
+                txPower = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+                scanMode = ScanSettings.SCAN_MODE_LOW_LATENCY
+            }
+            RadioProfile.BALANCED -> {
+                advertiseMode = AdvertiseSettings.ADVERTISE_MODE_BALANCED
+                txPower = AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM
+                scanMode = ScanSettings.SCAN_MODE_BALANCED
+            }
+            RadioProfile.LOW_POWER -> {
+                advertiseMode = AdvertiseSettings.ADVERTISE_MODE_LOW_POWER
+                txPower = AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM
+                scanMode = ScanSettings.SCAN_MODE_LOW_POWER
+            }
+            // Cheapest advertising interval, but the *highest* transmit power: a node here has
+            // stopped scanning entirely and broadcasts rarely, so each broadcast should carry
+            // as far as it possibly can. See docs/POWER.md §1.
+            RadioProfile.LOW_POWER_LONG_RANGE -> {
+                advertiseMode = AdvertiseSettings.ADVERTISE_MODE_LOW_POWER
+                txPower = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+                scanMode = ScanSettings.SCAN_MODE_LOW_POWER
+            }
+        }
+        // Re-apply immediately so the new tuning takes effect on the beacons already on air,
+        // rather than waiting for the next content change (which for a stable outbox may never
+        // come -- BleAdvertiser now skips no-op restarts).
+        advertiser.reapplyWith(advertiseMode, txPower)
+    }
+
     override suspend fun setAdvertisedBeacons(beacons: List<ByteArray>) {
         if (beacons.isEmpty()) {
             advertiser.stop()
         } else {
-            advertiser.setBeacons(beacons, DEFAULT_ADVERTISE_MODE, DEFAULT_TX_POWER)
+            advertiser.setBeacons(beacons, advertiseMode, txPower)
         }
     }
 
     override suspend fun scanFor(windowMillis: Long) {
         _events.emit(LinkEvent.ScanWindow(open = true, atMillis = System.currentTimeMillis()))
-        scanner.scanFor(windowMillis, DEFAULT_SCAN_MODE)
+        scanner.scanFor(windowMillis, scanMode)
         _events.emit(LinkEvent.ScanWindow(open = false, atMillis = System.currentTimeMillis()))
     }
 

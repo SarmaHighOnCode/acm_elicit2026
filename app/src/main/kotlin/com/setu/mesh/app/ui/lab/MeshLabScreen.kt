@@ -27,7 +27,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,12 +43,17 @@ import androidx.compose.ui.unit.dp
  * a technical judge's trust, and this screen is built to make that mistake structurally hard.
  */
 @Composable
-fun MeshLabScreen(viewModel: MeshLabViewModel = remember { MeshLabViewModel() }) {
+fun MeshLabScreen() {
+    val viewModel = MeshLabSimulation
     val snapshot by viewModel.snapshot.collectAsState()
-    var drainSlider by remember { mutableFloatStateOf(0f) }
+    var drainSlider by rememberSaveable { mutableFloatStateOf(0f) }
 
+    // Pause on the way out rather than tearing the world down: rotation and tab switches both
+    // dispose this composition, and rebuilding 100 nodes each time would throw away whatever the
+    // user was watching. The loop idles while invisible, so nothing burns CPU in the background.
     DisposableEffect(Unit) {
-        onDispose { viewModel.shutdown() }
+        viewModel.onScreenVisible()
+        onDispose { viewModel.onScreenGone() }
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -123,7 +128,7 @@ private fun MetricValue(label: String, value: String) {
 
 @Composable
 private fun Controls(
-    viewModel: MeshLabViewModel,
+    viewModel: MeshLabSimulation,
     currentScenario: String,
     drainValue: Float,
     onDrainChange: (Float) -> Unit,
@@ -169,7 +174,7 @@ private fun Controls(
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
             ) {
-                Text(if (viewModel.paused) "Resume" else "Pause", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                Text(if (viewModel.userPaused) "Resume" else "Pause", color = MaterialTheme.colorScheme.onPrimaryContainer)
             }
             Spacer(Modifier.width(8.dp))
             OutlinedButton(

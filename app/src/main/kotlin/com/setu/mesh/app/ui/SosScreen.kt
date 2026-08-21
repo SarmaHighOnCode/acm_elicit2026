@@ -16,39 +16,73 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.setu.mesh.app.service.SetuService
 import com.setu.mesh.app.ui.components.StatusLadder
 import com.setu.mesh.app.ui.components.TierBadge
+import com.setu.mesh.core.engine.NodeSnapshot
 import com.setu.mesh.core.model.Severity
-import com.setu.mesh.core.power.PowerTier
+import com.setu.mesh.core.model.SituationFlags
 import java.util.Locale
 
 /**
  * The screen a stranded person uses. Design constraint: they are panicking, possibly
  * one-handed, possibly in the dark or in water, phone at 4%. Every normal UI assumption is
- * wrong here, so the SOS button dominates the bottom half of the screen and sends immediately
+ * wrong here, so the SOS button dominates the bottom third of the screen and sends immediately
  * with no form to fill in first -- triage refines afterwards, never blocks sending.
+ *
+ * State lives here rather than in a ViewModel, for two specific reasons:
+ *
+ *  - **"Is an SOS outstanding?" is derived from the protocol, never mirrored.** It is exactly
+ *    `snapshot.ownSos != null`. An earlier version tracked it as a separate UI boolean, which
+ *    could desync from reality -- on rotation, or after a service restart, the screen would show
+ *    "not sent" while the mesh was still broadcasting the SOS. In an emergency app that is the
+ *    worst possible class of bug, so the mirror is gone.
+ *  - **Triage inputs use `rememberSaveable`**, so a rotation does not silently reset someone's
+ *    "trapped / water rising" answers back to defaults.
  */
 @Composable
-fun SosScreen(viewModel: SosViewModel = remember { SosViewModel() }) {
-    val snapshot by viewModel.snapshot.collectAsState()
+fun SosScreen() {
+    val snapshot by SetuService.snapshot.collectAsState()
+
+    var severity by rememberSaveable { mutableStateOf(Severity.HIGH) }
+    var souls by rememberSaveable { mutableIntStateOf(1) }
+    var trapped by rememberSaveable { mutableStateOf(false) }
+    var medicalNeed by rememberSaveable { mutableStateOf(false) }
+    var waterRising by rememberSaveable { mutableStateOf(false) }
+
+    // Single source of truth: the node either holds an outstanding own SOS or it does not.
+    val sosActive = snapshot?.ownSos != null
+
+    fun flags() = SituationFlags(
+        severity = severity,
+        trapped = trapped,
+        medicalNeed = medicalNeed,
+        waterRising = waterRising,
+    )
+
+    // Editing triage before the first send is free; after it, each edit re-sends so the mesh
+    // carries the corrected situation rather than the stale one.
+    fun resendIfActive() {
+        if (sosActive) SetuService.originateSos(flags(), souls)
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -62,34 +96,48 @@ fun SosScreen(viewModel: SosViewModel = remember { SosViewModel() }) {
                     .verticalScroll(rememberScrollState())
                     .padding(20.dp),
             ) {
-                if (snapshot != null) {
-                    TierBadge(tier = snapshot!!.tier, lastGasp = snapshot!!.lastGasp)
-                    Spacer(Modifier.height(20.dp))
-                }
+                snapshot?.let { TierBadge(tier = it.tier, lastGasp = it.lastGasp) }
+                if (snapshot != null) Spacer(Modifier.height(20.dp))
 
-                if (viewModel.hasSentOnce) {
+                if (sosActive) {
                     StatusLadder(
                         carrying = snapshot?.carrying ?: 0,
                         maxHops = snapshot?.ownSosMaxHops ?: 0,
                         delivered = snapshot?.ownSosDelivered ?: false,
                     )
                     Spacer(Modifier.height(24.dp))
-                    TriageControls(viewModel)
-                    Spacer(Modifier.height(24.dp))
-                    EnergySummary(snapshot)
                 } else {
                     Text(
                         text = if (snapshot == null) "Starting…" else "Tap SOS below to send your location and situation.",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Spacer(Modifier.height(24.dp))
+                }
+
+                TriageControls(
+                    severity = severity,
+                    souls = souls,
+                    trapped = trapped,
+                    medicalNeed = medicalNeed,
+                    waterRising = waterRising,
+                    onSeverity = { severity = it; resendIfActive() },
+                    onSouls = { souls = it.coerceIn(1, 255); resendIfActive() },
+                    onTrapped = { trapped = !trapped; resendIfActive() },
+                    onMedical = { medicalNeed = !medicalNeed; resendIfActive() },
+                    onWater = { waterRising = !waterRising; resendIfActive() },
+                )
+
+                if (sosActive) {
+                    Spacer(Modifier.height(24.dp))
+                    EnergySummary(snapshot)
                 }
             }
 
             SosButton(
-                sent = viewModel.hasSentOnce,
-                onSend = { viewModel.sendSos() },
-                onMarkSafe = { viewModel.markSafe() },
+                sent = sosActive,
+                onSend = { SetuService.originateSos(flags(), souls) },
+                onMarkSafe = { SetuService.markSafe() },
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.32f),
@@ -139,7 +187,18 @@ private fun SosButton(
 }
 
 @Composable
-private fun TriageControls(viewModel: SosViewModel) {
+private fun TriageControls(
+    severity: Severity,
+    souls: Int,
+    trapped: Boolean,
+    medicalNeed: Boolean,
+    waterRising: Boolean,
+    onSeverity: (Severity) -> Unit,
+    onSouls: (Int) -> Unit,
+    onTrapped: () -> Unit,
+    onMedical: () -> Unit,
+    onWater: () -> Unit,
+) {
     Text(
         text = "Situation",
         style = MaterialTheme.typography.labelLarge,
@@ -151,12 +210,23 @@ private fun TriageControls(viewModel: SosViewModel) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Severity.entries.forEach { severity ->
-            SeverityChip(
-                severity = severity,
-                selected = viewModel.severity == severity,
-                onClick = { viewModel.changeSeverity(severity) },
-                modifier = Modifier.weight(1f),
+        Severity.entries.forEach { value ->
+            FilterChip(
+                selected = severity == value,
+                onClick = { onSeverity(value) },
+                label = {
+                    Text(
+                        text = value.name.lowercase(Locale.US).replaceFirstChar { it.uppercase() },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { contentDescription = "Severity: ${value.name}" },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ),
             )
         }
     }
@@ -173,52 +243,24 @@ private fun TriageControls(viewModel: SosViewModel) {
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
-        SoulsCounter(
-            souls = viewModel.souls,
-            onDecrement = { viewModel.changeSouls(viewModel.souls - 1) },
-            onIncrement = { viewModel.changeSouls(viewModel.souls + 1) },
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CounterButton("−", { onSouls(souls - 1) }, "Decrease people count")
+            Text(
+                text = souls.toString(),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+            CounterButton("+", { onSouls(souls + 1) }, "Increase people count")
+        }
     }
 
     Spacer(Modifier.height(16.dp))
 
     Column {
-        ToggleRow("Trapped", viewModel.trapped) { viewModel.toggleTrapped() }
-        ToggleRow("Medical need", viewModel.medicalNeed) { viewModel.toggleMedicalNeed() }
-        ToggleRow("Water rising", viewModel.waterRising) { viewModel.toggleWaterRising() }
-    }
-}
-
-@Composable
-private fun SeverityChip(severity: Severity, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = {
-            Text(
-                text = severity.name.lowercase(Locale.US).replaceFirstChar { it.uppercase() },
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        },
-        modifier = modifier.semantics { contentDescription = "Severity: ${severity.name}" },
-        colors = FilterChipDefaults.filterChipColors(
-            selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-            selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        ),
-    )
-}
-
-@Composable
-private fun SoulsCounter(souls: Int, onDecrement: () -> Unit, onIncrement: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        CounterButton(symbol = "−", onClick = onDecrement, description = "Decrease people count")
-        Text(
-            text = souls.toString(),
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(horizontal = 16.dp),
-        )
-        CounterButton(symbol = "+", onClick = onIncrement, description = "Increase people count")
+        ToggleRow("Trapped", trapped, onTrapped)
+        ToggleRow("Medical need", medicalNeed, onMedical)
+        ToggleRow("Water rising", waterRising, onWater)
     }
 }
 
@@ -271,7 +313,7 @@ private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
  * which is exactly what `docs/POWER.md` warns against doing anywhere in this project.
  */
 @Composable
-private fun EnergySummary(snapshot: com.setu.mesh.core.engine.NodeSnapshot?) {
+private fun EnergySummary(snapshot: NodeSnapshot?) {
     val energy = snapshot?.energyMilliampHours ?: return
     if (energy <= 0.0) return
     Text(

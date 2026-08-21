@@ -4,6 +4,7 @@ import com.setu.mesh.core.codec.BeaconCodec
 import com.setu.mesh.core.link.Link
 import com.setu.mesh.core.link.LinkEvent
 import com.setu.mesh.core.link.PeerHandle
+import com.setu.mesh.core.link.RadioProfile
 import com.setu.mesh.core.model.DEFAULT_TTL
 import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.MILLIS_PER_MINUTE
@@ -84,6 +85,7 @@ class MeshNode(
     private var sequence = 0
     private var ownMessageId: MessageId? = null
     private var carouselOffset = 0
+    private var lastRadioProfile: RadioProfile? = null
 
     private val _snapshot = MutableStateFlow(NodeSnapshot(id = id))
     val snapshot: StateFlow<NodeSnapshot> = _snapshot.asStateFlow()
@@ -301,6 +303,14 @@ class MeshNode(
             outbox.purgeStale(now)
             seen.purgeExpired(now)
 
+            // Only on change: retuning the radio is not free, and the tier is stable for long
+            // stretches. Without this guard it would fire on every loop iteration.
+            val profile = radioProfileFor(plan.tier)
+            if (profile != lastRadioProfile) {
+                link.applyRadioProfile(profile)
+                lastRadioProfile = profile
+            }
+
             val beacons = beaconsToAdvertise(link.capabilities.advertisingSlots, now)
             if (link.capabilities.canAdvertise) {
                 link.setAdvertisedBeacons(beacons)
@@ -338,6 +348,21 @@ class MeshNode(
      * sleeps no longer than the time remaining until the window opens. Repeated application
      * converges on landing exactly at the window boundary, whatever the starting phase.
      */
+    /**
+     * Translates the protocol's power tier into transport-level radio intent. EMBER maps to
+     * LOW_POWER_LONG_RANGE rather than plain LOW_POWER on purpose: a node at that tier has
+     * stopped listening entirely and broadcasts rarely, so each broadcast should reach as far
+     * as it can. Spending transmit power there buys reach with energy the node is no longer
+     * spending on scanning. See `docs/POWER.md` §1.
+     */
+    private fun radioProfileFor(tier: PowerTier): RadioProfile = when (tier) {
+        PowerTier.BRIDGE -> RadioProfile.HIGH_PERFORMANCE
+        PowerTier.RELAY -> RadioProfile.BALANCED
+        PowerTier.GOSSIP -> RadioProfile.BALANCED
+        PowerTier.FLARE -> RadioProfile.LOW_POWER
+        PowerTier.EMBER -> RadioProfile.LOW_POWER_LONG_RANGE
+    }
+
     private fun nextSleepMillis(plan: RadioPlan, nowMillis: Long): Long {
         val base = plan.beaconIntervalMillis
         // Gated on tier.scans, NOT on plan.scanThisEpoch. scanThisEpoch is only true during the
