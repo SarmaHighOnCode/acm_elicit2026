@@ -315,8 +315,42 @@ class MeshNode(
             }
 
             refreshSnapshot(now)
-            delay(plan.beaconIntervalMillis.coerceAtLeast(MIN_LOOP_DELAY_MILLIS))
+            delay(nextSleepMillis(plan, now))
         }
+    }
+
+    /**
+     * How long to sleep before the next loop iteration.
+     *
+     * Sleeping a flat [RadioPlan.beaconIntervalMillis] is *not* safe here, and this is subtle
+     * enough to be worth spelling out. The rendezvous window is 1s wide inside a 60s epoch, and
+     * the loop wakes on a fixed grid whose phase is set by whenever the node happened to start.
+     * If that grid never lands inside the window, the node never scans -- not rarely, *never*.
+     * Concretely, a FLARE node (2s interval) that starts 1.2s into an epoch has wake times at
+     * 1.2s, 3.2s, 5.2s ... and every one of them misses [0s, 1s). It stays permanently deaf
+     * while reporting itself perfectly healthy.
+     *
+     * The simulator cannot catch this: `World.tick()` steps a fixed 250ms, which always samples
+     * the window. It is a hardware-only failure, which is exactly the kind worth designing out
+     * rather than discovering on stage.
+     *
+     * So when this node intends to scan this epoch but is not currently inside the window, it
+     * sleeps no longer than the time remaining until the window opens. Repeated application
+     * converges on landing exactly at the window boundary, whatever the starting phase.
+     */
+    private fun nextSleepMillis(plan: RadioPlan, nowMillis: Long): Long {
+        val base = plan.beaconIntervalMillis
+        // Gated on tier.scans, NOT on plan.scanThisEpoch. scanThisEpoch is only true during the
+        // epochs this tier actually participates in; a tier that scans every 4th epoch would
+        // otherwise drift freely through the three idle epochs and arrive at the participating
+        // one at an arbitrary phase -- reintroducing exactly the bug this exists to prevent.
+        // millisUntilNextWindow already skips ahead to the next *participating* epoch.
+        val sleep = if (plan.tier.scans && !plan.inRendezvousWindow) {
+            minOf(base, governor.millisUntilNextWindow(nowMillis, plan.tier))
+        } else {
+            base
+        }
+        return sleep.coerceAtLeast(MIN_LOOP_DELAY_MILLIS)
     }
 
     // ---------------------------------------------------------------- internals

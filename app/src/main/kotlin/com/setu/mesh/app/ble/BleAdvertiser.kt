@@ -114,6 +114,18 @@ class BleAdvertiser(
         }
 
         handler.post {
+            // MeshNode.run() calls this on every loop iteration -- every 500ms at BRIDGE tier --
+            // usually with an identical beacon set. Restarting the radio each time is real churn:
+            // it stops and re-registers every advertiser, which wastes power on the exact hot
+            // path this project exists to optimise, and on some Bluetooth stacks provokes
+            // ADVERTISE_FAILED_ALREADY_STARTED or INTERNAL_ERROR under repetition. Skipping the
+            // no-op restart is both a power and a reliability fix.
+            val unchanged = mode == currentMode &&
+                txPower == currentTxPower &&
+                sameBeacons(valid, currentBeacons) &&
+                activeCallbacks.isNotEmpty()
+            if (unchanged) return@post
+
             currentBeacons = valid
             currentMode = mode
             currentTxPower = txPower
@@ -122,6 +134,14 @@ class BleAdvertiser(
             retriedAlreadyStarted = false
             applyWindow()
         }
+    }
+
+    private fun sameBeacons(a: List<ByteArray>, b: List<ByteArray>): Boolean {
+        if (a.size != b.size) return false
+        for (i in a.indices) {
+            if (!a[i].contentEquals(b[i])) return false
+        }
+        return true
     }
 
     fun stop() {
