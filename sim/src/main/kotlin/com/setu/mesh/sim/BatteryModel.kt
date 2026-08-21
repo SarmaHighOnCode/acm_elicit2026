@@ -36,6 +36,16 @@ class BatteryModel(
         remainingMilliampHours = (remainingMilliampHours - radioDelta - idleCost).coerceAtLeast(0.0)
     }
 
+    /** Immediately zeroes the battery. For Mesh Lab's tap-to-kill interaction. */
+    fun kill() {
+        remainingMilliampHours = 0.0
+    }
+
+    /** Reduces remaining charge by [fraction] (0..1) of what is left. For Mesh Lab's drain slider. */
+    fun drainByFraction(fraction: Double) {
+        remainingMilliampHours = (remainingMilliampHours * (1.0 - fraction.coerceIn(0.0, 1.0))).coerceAtLeast(0.0)
+    }
+
     companion object {
         const val DEFAULT_CAPACITY_MAH = 4000.0
         /** ~10 mA idle draw ≈ roughly 1% per 4 hours on a 4000 mAh battery. */

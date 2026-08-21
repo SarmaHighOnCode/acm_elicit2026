@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,19 +18,23 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.setu.mesh.app.service.SetuService
+import com.setu.mesh.app.ui.MeshScreen
+import com.setu.mesh.app.ui.SosScreen
+import com.setu.mesh.app.ui.lab.MeshLabScreen
 import com.setu.mesh.app.ui.theme.SetuTheme
 
 class MainActivity : ComponentActivity() {
@@ -55,8 +60,42 @@ private fun SetuApp() {
     }
 }
 
+private val TAB_TITLES = listOf("SOS", "Mesh", "Mesh Lab", "Diagnostics")
+
 @Composable
 private fun RunningScreen() {
+    var selectedTab by remember { mutableIntStateOf(0) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = selectedTab) {
+            TAB_TITLES.forEachIndexed { index, title ->
+                Tab(
+                    selected = selectedTab == index,
+                    onClick = { selectedTab = index },
+                    text = { Text(title) },
+                )
+            }
+        }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            when (selectedTab) {
+                0 -> SosScreen()
+                1 -> MeshScreen()
+                2 -> MeshLabScreen()
+                3 -> DiagnosticsScreen()
+            }
+        }
+    }
+}
+
+/**
+ * The raw-radio test controls from B2/B3/B4. Kept, not deleted, because gate G3 (a beacon
+ * actually crossing two phones) has not yet been verified on physical hardware -- these remain
+ * the fastest way to debug `AndroidLink`/`BleAdvertiser`/`BleScanner` directly if that
+ * verification turns up a problem, without the protocol layer in the way.
+ */
+@Composable
+private fun DiagnosticsScreen() {
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
@@ -64,43 +103,26 @@ private fun RunningScreen() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+                .padding(24.dp)
+                .then(Modifier),
         ) {
             Text(
-                text = "SETU",
-                style = MaterialTheme.typography.headlineLarge,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            Text(
-                text = "Relay active",
+                text = "Raw radio diagnostics",
                 style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.tertiary,
+                color = MaterialTheme.colorScheme.primary,
             )
-
-            Spacer(Modifier.height(16.dp))
-
+            Spacer(Modifier.height(8.dp))
             Text(
-                text = "The mesh relay is running.\nListening for emergency beacons.",
-                style = MaterialTheme.typography.bodyLarge,
+                text = "Bypasses MeshNode entirely -- for debugging AndroidLink/BleAdvertiser/BleScanner directly.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(24.dp))
 
             MeshControls()
-
             Spacer(Modifier.height(24.dp))
-
             AdvertiserTestControls()
-
             Spacer(Modifier.height(24.dp))
-
             ScannerTestControls()
         }
     }
@@ -162,8 +184,7 @@ private fun MeshControls() {
 
 /**
  * B2 verification scaffolding. Drives the service's advertiser with known test patterns so the
- * bytes on air can be checked against nRF Connect on a second phone. Deleted in B5, when the
- * real `MeshNode` supplies the beacons.
+ * bytes on air can be checked against nRF Connect on a second phone.
  */
 @Composable
 private fun AdvertiserTestControls() {
@@ -220,7 +241,7 @@ private fun AdvertiserTestControls() {
 /**
  * B3 verification scaffolding. Drives the service's scanner so hits can be checked against the
  * B2 advertiser test controls on a second phone, and so the 6-second rate limiter can be proven
- * out via logcat. Deleted in B5, when the real `MeshNode` schedules scan windows itself.
+ * out via logcat.
  */
 @Composable
 private fun ScannerTestControls() {

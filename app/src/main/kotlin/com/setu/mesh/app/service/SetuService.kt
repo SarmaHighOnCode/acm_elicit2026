@@ -15,10 +15,10 @@ import com.setu.mesh.app.ble.AndroidLink
 import com.setu.mesh.app.ble.BEACON_SIZE_BYTES
 import com.setu.mesh.app.ble.BleAdvertiser
 import com.setu.mesh.app.ble.BleScanner
+import com.setu.mesh.app.data.NodeIdentity
 import com.setu.mesh.core.engine.MeshNode
-import com.setu.mesh.core.engine.NodeHost
-import com.setu.mesh.core.model.GeoPoint
-import com.setu.mesh.core.model.NodeId
+import com.setu.mesh.core.engine.NodeSnapshot
+import com.setu.mesh.core.model.MessageId
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SituationFlags
 import kotlinx.coroutines.CoroutineScope
@@ -27,8 +27,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.util.UUID
 
 /**
  * Keeps the BLE relay alive when the screen is off. Android will kill a background BLE
@@ -50,38 +52,18 @@ class SetuService : LifecycleService() {
     /** Tracks the currently running test scan/throttle job so a repeat tap replaces it cleanly. */
     private var scanTestJob: Job? = null
 
-    // ---------------------------------------------------------------- B4/G3: the real mesh node
+    // ---------------------------------------------------------------- B5: the real mesh node
 
-    /**
-     * Stand-in for the real `AndroidNodeHost` that B5 will build (reading `BatteryManager` and
-     * GPS). Fixed at full battery, not charging, no fix yet -- exactly what
-     * `docs/tasks/B4-android-link.md` calls for so `MeshNode.run()` can be exercised for real
-     * before B5 lands. `hasTrustedClock() = true` assumes the phone's own clock is NTP-synced,
-     * which is the common case and is what lets rendezvous phase-lock without waiting on drift
-     * correction during this test.
-     */
-    private object StubNodeHost : NodeHost {
-        override fun nowMillis(): Long = System.currentTimeMillis()
-        override fun batteryPercent(): Int = 100
-        override fun isCharging(): Boolean = false
-        override fun position(): GeoPoint? = null
-        override fun hasTrustedClock(): Boolean = true
-    }
-
-    /**
-     * Fresh per service instance -- fine for a two-phone bring-up test, but two phones must
-     * not collide, so it is randomly seeded rather than fixed. B5 persists this in
-     * `SharedPreferences` via `NodeIdentity` so it survives restarts.
-     */
-    private val nodeId: NodeId by lazy { NodeId.fromSeed(UUID.randomUUID().toString()) }
-
+    private var androidNodeHost: AndroidNodeHost? = null
     private var androidLink: AndroidLink? = null
     private var meshNode: MeshNode? = null
     private var meshJob: Job? = null
+    private var notificationJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
+        runningInstance = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -170,24 +152,29 @@ class SetuService : LifecycleService() {
     /**
      * Gate G3: brings up a real `MeshNode` over a real `AndroidLink` and starts its run loop.
      * This is the same `MeshNode.run()` that `:sim` drives against `SimLink` -- the only thing
-     * that differs here is which `Link` it is handed.
+     * that differs here is which `Link` it is handed. Node identity is persisted via
+     * [NodeIdentity] so it survives a service restart.
      */
     private fun startMesh() {
         if (meshNode != null) {
-            Log.i(TAG_MESH, "Mesh already running for node ${nodeId.short()}")
+            Log.i(TAG_MESH, "Mesh already running")
             return
         }
+        val nodeId = NodeIdentity.get(this)
+        val host = AndroidNodeHost(this)
         val link = AndroidLink(this, scope)
-        val node = MeshNode(nodeId, link, StubNodeHost)
+        val node = MeshNode(nodeId, link, host)
+
+        androidNodeHost = host
         androidLink = link
         meshNode = node
+        _snapshot.value = null
 
         meshJob = scope.launch { node.run() }
 
-        // Periodic snapshot logging is the only observability this bring-up test needs --
-        // the real UI (B6/B7) reads `MeshNode.snapshot` directly instead of logcat.
-        scope.launch {
+        notificationJob = scope.launch {
             node.snapshot.collect { snap ->
+                _snapshot.value = snap
                 Log.i(
                     TAG_MESH,
                     "node=${nodeId.short()} tier=${snap.tier} battery=${snap.batteryPercent}% " +
@@ -195,6 +182,11 @@ class SetuService : LifecycleService() {
                         "advertising=${snap.advertising} scanning=${snap.scanning} " +
                         "ownSosDelivered=${snap.ownSosDelivered}",
                 )
+                updateNotification(snap)
+                // Notification updates are the one thing here worth rate-limiting: churning
+                // the system notification on every protocol tick is itself a battery cost,
+                // which would be an embarrassing thing to get wrong in this particular app.
+                delay(NOTIFICATION_UPDATE_MIN_INTERVAL_MILLIS)
             }
         }
 
@@ -204,9 +196,14 @@ class SetuService : LifecycleService() {
     private fun stopMesh() {
         meshJob?.cancel()
         meshJob = null
+        notificationJob?.cancel()
+        notificationJob = null
         val link = androidLink
         androidLink = null
+        androidNodeHost?.shutdown()
+        androidNodeHost = null
         meshNode = null
+        _snapshot.value = null
         if (link != null) {
             scope.launch { link.shutdown() }
         }
@@ -230,7 +227,13 @@ class SetuService : LifecycleService() {
         scanner.stop()
         scanTestJob?.cancel()
         scope.cancel()
+        if (runningInstance === this) runningInstance = null
         super.onDestroy()
+    }
+
+    private fun updateNotification(snapshot: NodeSnapshot) {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(NOTIFICATION_ID, buildNotification(snapshot))
     }
 
     private fun ensureNotificationChannel() {
@@ -245,10 +248,20 @@ class SetuService : LifecycleService() {
         manager.createNotificationChannel(channel)
     }
 
-    private fun buildNotification(): Notification {
+    /**
+     * With no [snapshot] yet (service just started, mesh not brought up) this is the generic
+     * "relay active" text from strings.xml. Once the mesh is running it shows
+     * "SETU · RELAY — carrying 3 · 5 nearby", matching `docs/tasks/B5-node-host-and-service.md`.
+     */
+    private fun buildNotification(snapshot: NodeSnapshot? = null): Notification {
+        val text = if (snapshot != null) {
+            "${snapshot.tier} — carrying ${snapshot.carrying} · ${snapshot.neighbourCount} nearby"
+        } else {
+            getString(R.string.notification_text)
+        }
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text))
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)
             .build()
@@ -296,12 +309,45 @@ class SetuService : LifecycleService() {
 
         private fun ByteArray.toHex(): String = joinToString("") { "%02X".format(it) }
 
-        // ---- B4/G3: the real mesh node ----
+        // ---- B5: the real mesh node ----
 
         const val ACTION_START_MESH = "com.setu.mesh.app.action.START_MESH"
         const val ACTION_STOP_MESH = "com.setu.mesh.app.action.STOP_MESH"
         const val ACTION_ORIGINATE_TEST_SOS = "com.setu.mesh.app.action.ORIGINATE_TEST_SOS"
 
         private const val TAG_MESH = "SetuMesh"
+
+        /** Notification churn is itself a battery cost; this is deliberately not per-tick. */
+        private const val NOTIFICATION_UPDATE_MIN_INTERVAL_MILLIS = 3_000L
+
+        private val _snapshot = MutableStateFlow<NodeSnapshot?>(null)
+
+        /**
+         * Live snapshot of the running node, or null when the mesh is not started. This is the
+         * singleton-holder half of the B5 spec's "expose via a binder or a singleton holder" —
+         * B6/B7's `ViewModel`s collect this directly rather than binding to the service.
+         */
+        val snapshot: StateFlow<NodeSnapshot?> = _snapshot.asStateFlow()
+
+        /** The one running instance, so the companion API below can reach its live `MeshNode`. */
+        @Volatile
+        private var runningInstance: SetuService? = null
+
+        /** Null when the mesh is not running -- callers must check before assuming an id exists. */
+        fun originateSos(flags: SituationFlags, souls: Int): MessageId? =
+            runningInstance?.meshNode?.originateSos(flags, souls)
+
+        fun markSafe() {
+            runningInstance?.meshNode?.markSafe()
+        }
+
+        /** Debug-only; see `AndroidNodeHost.setBatteryOverride`. No-op if the mesh isn't running. */
+        fun setBatteryOverride(percent: Int?) {
+            runningInstance?.androidNodeHost?.setBatteryOverride(percent)
+        }
+
+        /** Everything this node is currently carrying, for the responder view. Empty if not running. */
+        fun carriedMessages(): List<com.setu.mesh.core.model.SosBeacon> =
+            runningInstance?.meshNode?.carriedMessages() ?: emptyList()
     }
 }

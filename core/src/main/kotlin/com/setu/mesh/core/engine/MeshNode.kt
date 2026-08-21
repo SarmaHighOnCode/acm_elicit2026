@@ -263,6 +263,16 @@ class MeshNode(
         return slice
     }
 
+    /**
+     * Snapshot of everything this node currently carries, in the same order the beacon
+     * carousel would broadcast them. Read-only: unlike [beaconsToAdvertise], this does not
+     * rotate the carousel offset, so a UI can call it freely without disturbing what actually
+     * goes out over the radio. Exists for the responder view, which needs to list carried SOS
+     * messages rather than just a count.
+     */
+    fun carriedMessages(nowMillis: Long = host.nowMillis()): List<SosBeacon> =
+        outbox.carouselOrder(nowMillis).map { it.beacon }
+
     // ---------------------------------------------------------------- run loop
 
     /** Drives [link] from [planNow]. Cancel the surrounding scope to stop. */
