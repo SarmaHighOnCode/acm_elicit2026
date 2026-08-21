@@ -276,6 +276,7 @@ minSdk 26 · Compose BOM 2026.08.00. Do not bump them during the build window.
 | [`docs/POWER.md`](docs/POWER.md) | the battery answer in full, with measurement plan |
 | [`docs/DEMO.md`](docs/DEMO.md) | the five-minute demo script |
 | [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) | what SETU does and does not defend against |
+| [`docs/tasks/`](docs/tasks/) | Android build tasks, B1–B8, with acceptance criteria |
 | [`docs/adr/`](docs/adr/) | architecture decision records |
 
 ## Prior art
