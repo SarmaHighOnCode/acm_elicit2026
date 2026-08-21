@@ -73,6 +73,9 @@ class MeshNode(
     private val random: Random = Random.Default,
     /** See [ProtocolTuning]. Default reproduces normal forwarding-policy behaviour exactly. */
     private val tuning: ProtocolTuning = ProtocolTuning.DEFAULT,
+    private val keyStore: com.setu.mesh.core.crypto.KeyStore = object : com.setu.mesh.core.crypto.KeyStore {
+        override fun getPublicKey(originId: NodeId): java.security.PublicKey? = null
+    }
 ) {
     private val seen = SeenSet()
     private val outbox = Outbox()
@@ -268,7 +271,13 @@ class MeshNode(
             link.events.collect { event ->
                 when (event) {
                     is LinkEvent.BeaconHeard -> onBeaconHeard(event.payload, event.peer, event.atMillis)
-                    is LinkEvent.BundleReceived -> Unit // rich bundles: see docs/PROTOCOL.md roadmap
+                    is LinkEvent.BundleReceived -> {
+                        val bundle = com.setu.mesh.core.codec.BundleCodec.decode(event.payload, keyStore)
+                        if (bundle != null && bundle.verification != com.setu.mesh.core.model.BundleVerification.SignatureInvalid) {
+                            val encodedBeacon = com.setu.mesh.core.codec.BeaconCodec.encode(bundle.beacon)
+                            onBeaconHeard(encodedBeacon, event.peer, event.atMillis)
+                        }
+                    }
                     is LinkEvent.ScanWindow -> Unit
                     is LinkEvent.RadioUnavailable -> Unit
                 }
