@@ -2,9 +2,9 @@ package com.setu.mesh.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.setu.mesh.app.service.SetuService
+import com.setu.mesh.app.ui.components.RelativeMap
+import com.setu.mesh.app.ui.components.SosCard
 import kotlinx.coroutines.delay
 
 /**
@@ -29,11 +31,9 @@ import kotlinx.coroutines.delay
  * severity -- that ordering is a safety decision (see [sortForResponder]), not a display
  * preference.
  *
- * A relative-position canvas (own device at centre, SOS positions plotted around it) was in the
- * original design for this screen but is cut here for time; positions are shown as text instead,
- * grouped into known/unknown rather than plotted. No online map tiles are used regardless -- an
- * offline-mesh app depending on the internet for its own map would be absurd, and would fail on
- * stage.
+ * Own device at centre of [RelativeMap], known-position reports plotted by real bearing and
+ * distance. No online map tiles are used regardless of what this screen shows -- an offline-mesh
+ * app depending on the internet for its own map would be absurd, and would fail on stage.
  */
 @Composable
 fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
@@ -51,6 +51,7 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
     val sorted = sortForResponder(viewModel.carried, selfOriginRaw)
     val known = sorted.filter { hasKnownPosition(it) }
     val unknown = sorted.filter { !hasKnownPosition(it) }
+    val selfPosition = SetuService.selfPosition()
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (sorted.isEmpty()) {
@@ -58,20 +59,29 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (known.isNotEmpty()) {
                     item { SectionHeader("Position known") }
-                    items(known) { beacon ->
-                        com.setu.mesh.app.ui.components.SosCard(beacon = beacon, nowMillis = now)
+                    if (selfPosition != null) {
+                        item {
+                            RelativeMap(self = selfPosition, beacons = known, onTapBeacon = {})
+                        }
+                    } else {
+                        item {
+                            Text(
+                                "Waiting for your own GPS fix to plot relative positions.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
+                    items(known) { beacon -> SosCard(beacon = beacon, nowMillis = now) }
                 }
                 if (unknown.isNotEmpty()) {
                     item { SectionHeader("Position unknown") }
-                    items(unknown) { beacon ->
-                        com.setu.mesh.app.ui.components.SosCard(beacon = beacon, nowMillis = now)
-                    }
+                    items(unknown) { beacon -> SosCard(beacon = beacon, nowMillis = now) }
                 }
             }
         }

@@ -349,5 +349,13 @@ class SetuService : LifecycleService() {
         /** Everything this node is currently carrying, for the responder view. Empty if not running. */
         fun carriedMessages(): List<com.setu.mesh.core.model.SosBeacon> =
             runningInstance?.meshNode?.carriedMessages() ?: emptyList()
+
+        /**
+         * This device's own last GPS fix, for the responder map to plot relative to. Not on
+         * `NodeSnapshot` -- that type is `:core` and has no reason to carry raw position, since
+         * `MeshNode` itself only ever needs it indirectly through `NodeHost`.
+         */
+        fun selfPosition(): com.setu.mesh.core.model.GeoPoint? =
+            runningInstance?.androidNodeHost?.position()
     }
 }
