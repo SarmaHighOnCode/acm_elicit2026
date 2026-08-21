@@ -81,7 +81,14 @@ class World(
             if (plan.advertising && beacons.isNotEmpty()) {
                 node.meshNode.ledger.billAdvertising(tickMillis, plan.beaconIntervalMillis)
             }
-            if (plan.scanThisEpoch && plan.scanWindowMillis > 0) {
+            // Gated on inRendezvousWindow, not just scanThisEpoch: scanThisEpoch says this
+            // tier participates in this epoch at all, but the radio must only actually be on
+            // during the ~1s rendezvous window inside that epoch. Billing (and delivery, in
+            // Phase 2) on scanThisEpoch alone was the defect that made phase-locked rendezvous
+            // dead code -- every tick of a participating epoch was treated as "scanning",
+            // which both massively over-billed scan energy and made unsynced indistinguishable
+            // from flood, since nothing ever depended on phase.
+            if (plan.scanThisEpoch && plan.inRendezvousWindow && plan.scanWindowMillis > 0) {
                 node.meshNode.ledger.billScan(plan.scanWindowMillis.coerceAtMost(tickMillis))
             }
         }
@@ -92,7 +99,7 @@ class World(
 
             val now = receiver.clock.nowMillis()
             val plan = receiver.meshNode.planNow(now)
-            if (!plan.scanThisEpoch) continue
+            if (!plan.scanThisEpoch || !plan.inRendezvousWindow) continue
 
             val receiverPos = receiver.host.position() ?: continue
 

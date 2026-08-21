@@ -16,6 +16,7 @@ import com.setu.mesh.core.model.SosBeacon
 import com.setu.mesh.core.power.NeighbourEnergy
 import com.setu.mesh.core.power.PowerGovernor
 import com.setu.mesh.core.power.PowerTier
+import com.setu.mesh.core.power.ProtocolTuning
 import com.setu.mesh.core.power.RadioPlan
 import com.setu.mesh.core.routing.ForwardingContext
 import com.setu.mesh.core.routing.ForwardingPolicy
@@ -70,6 +71,8 @@ class MeshNode(
     private val host: NodeHost,
     private val governor: PowerGovernor = PowerGovernor(),
     private val random: Random = Random.Default,
+    /** See [ProtocolTuning]. Default reproduces normal forwarding-policy behaviour exactly. */
+    private val tuning: ProtocolTuning = ProtocolTuning.DEFAULT,
 ) {
     private val seen = SeenSet()
     private val outbox = Outbox()
@@ -218,6 +221,7 @@ class MeshNode(
                 isOwnMessage = beacon.origin == id,
             ),
             random = random,
+            energyGateOverride = tuning.energyGateOverride,
         )
 
         if (decision is RelayDecision.Relay) {
@@ -284,7 +288,7 @@ class MeshNode(
                 governor.ledger.billAdvertising(plan.beaconIntervalMillis, plan.beaconIntervalMillis)
             }
 
-            if (plan.scanThisEpoch && plan.scanWindowMillis > 0) {
+            if (plan.scanThisEpoch && plan.inRendezvousWindow && plan.scanWindowMillis > 0) {
                 _snapshot.value = _snapshot.value.copy(scanning = true)
                 link.scanFor(plan.scanWindowMillis)
                 governor.ledger.billScan(plan.scanWindowMillis)

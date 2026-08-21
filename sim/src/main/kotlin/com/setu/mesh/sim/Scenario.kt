@@ -7,6 +7,7 @@ import com.setu.mesh.core.model.NodeId
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SituationFlags
 import com.setu.mesh.core.power.PowerGovernor
+import com.setu.mesh.core.power.ProtocolTuning
 import kotlin.random.Random
 
 /**
@@ -25,8 +26,10 @@ object Scenario {
         rangeMetres: Double,
         lossRate: Double,
         random: Random,
+        /** Only honoured by "flood" -- the other scenarios use default protocol behaviour. */
+        tuning: ProtocolTuning = ProtocolTuning.DEFAULT,
     ): World = when (name) {
-        "flood" -> flood(nodeCount, rangeMetres, lossRate, random)
+        "flood" -> flood(nodeCount, rangeMetres, lossRate, random, tuning)
         "drain" -> drain(nodeCount, rangeMetres, lossRate, random)
         "partition" -> partition(nodeCount, rangeMetres, lossRate, random)
         "dying-chain" -> dyingChain(nodeCount, rangeMetres, lossRate, random)
@@ -38,7 +41,13 @@ object Scenario {
      * **flood**: N nodes in 4 clusters within range of each other, 1 gateway.
      * Batteries 10–100%. Demonstrates baseline delivery and the power ladder.
      */
-    private fun flood(n: Int, range: Double, loss: Double, masterRandom: Random): World {
+    private fun flood(
+        n: Int,
+        range: Double,
+        loss: Double,
+        masterRandom: Random,
+        tuning: ProtocolTuning = ProtocolTuning.DEFAULT,
+    ): World {
         val clock = VirtualClock()
         val nodes = mutableListOf<SimNode>()
 
@@ -58,7 +67,7 @@ object Scenario {
                 cluster.longitudeE7 + nodeRandom.nextInt(-2700, 2700),
             )
             val battery = if (i == 0) 100 else nodeRandom.nextInt(10, 101)
-            nodes += makeNode(i, clock, pos, battery, trustedClock = true, nodeRandom, i == 0)
+            nodes += makeNode(i, clock, pos, battery, trustedClock = true, nodeRandom, i == 0, tuning)
         }
 
         originateSosMessages(nodes, n, clock.nowMillis(), masterRandom)
@@ -227,12 +236,13 @@ object Scenario {
         trustedClock: Boolean,
         random: Random,
         isGateway: Boolean,
+        tuning: ProtocolTuning = ProtocolTuning.DEFAULT,
     ): SimNode {
         val battery = BatteryModel(batteryPercent)
         val link = SimLink()
         val host = SimHost(clock, battery, Mobility.Static(position), trustedClock = trustedClock, random = random)
         val nodeId = NodeId(index and 0xFFFFFF)
-        val meshNode = MeshNode(nodeId, link, host, PowerGovernor(), random)
+        val meshNode = MeshNode(nodeId, link, host, PowerGovernor(tuning = tuning), random, tuning)
         return SimNode(nodeId, host, link, meshNode, battery, clock, isGateway)
     }
 

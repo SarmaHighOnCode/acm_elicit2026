@@ -2,8 +2,7 @@ package com.setu.mesh.sim
 
 import com.setu.mesh.core.codec.BeaconCodec
 import com.setu.mesh.core.model.MessageType
-import com.setu.mesh.core.routing.ForwardingPolicy
-import com.setu.mesh.core.power.ScannerElection
+import com.setu.mesh.core.power.ProtocolTuning
 import java.io.File
 import kotlin.random.Random
 
@@ -26,8 +25,9 @@ object Sweeps {
         lossRate: Double,
         batteryPercent: Int,
         random: Random,
+        tuning: ProtocolTuning = ProtocolTuning.DEFAULT,
     ): World {
-        val world = Scenario.build("flood", nodeCount, rangeMetres, lossRate, random)
+        val world = Scenario.build("flood", nodeCount, rangeMetres, lossRate, random, tuning)
         world.nodes.filter { !it.isGateway }.forEach { node ->
             // Re-initialize battery remaining mAh to reflect specified start percent
             val cap = BatteryModel.DEFAULT_CAPACITY_MAH
@@ -82,22 +82,30 @@ object Sweeps {
         val sweepsDir = ensureSweepsDir()
         val csvFile = File(sweepsDir, "sweep2_energy_gate.csv")
         val lines = mutableListOf<String>()
-        lines.add("configuration,seed,mesh_lifetime_minutes,delivery_ratio")
+        lines.add("configuration,seed,mesh_lifetime_minutes,threshold_reached,delivery_ratio")
 
         println("=== Running Sweep 2: Energy Gate Load-Bearing Check ===")
-        println("Config    | Seed | Lifetime (min) | Delivery Ratio")
-        println("----------+------+----------------+---------------")
+        println("Config    | Seed | Lifetime (min) | Reached? | Delivery Ratio")
+        println("----------+------+----------------+----------+---------------")
 
-        val maxMinutes = 30
-        val maxTicks = maxMinutes * (60_000 / World.TICK_MILLIS).toInt() // 30 virtual minutes
+        // 20 nodes rather than 100, and 5% starting battery rather than 10%, specifically so
+        // that reaching 50% mesh death is achievable inside a tractable virtual duration --
+        // the earlier version ran only 30 virtual minutes at 10% starting battery, which is
+        // nowhere near enough time for BatteryModel's ~10 mA idle draw (400 mAh / 10 mA = 40h
+        // for a 10%-full 4000 mAh battery) plus radio cost to deplete anyone, so both arms
+        // reported "100% survival" and the sweep never actually tested its own hypothesis.
+        val nodeCount = 20
+        val startBatteryPercent = 5
+        val maxMinutes = 8 * 60 // 8 virtual hours
+        val maxTicks = maxMinutes * (60_000 / World.TICK_MILLIS).toInt()
 
         for (gated in listOf(true, false)) {
-            ForwardingPolicy.forceEnergyGateOne = !gated
+            val tuning = ProtocolTuning(energyGateOverride = if (gated) null else 1.0)
             val configName = if (gated) "Gated" else "Ungated (Force 1.0)"
 
             for (seedIdx in 0 until 5) {
                 val seed = masterSeed + (if (gated) 1000 else 2000) + seedIdx
-                val world = buildFloodWithBattery(100, 80.0, 0.05, 10, Random(seed))
+                val world = buildFloodWithBattery(nodeCount, 80.0, 0.05, startBatteryPercent, Random(seed), tuning)
                 var lifetimeMinutes = maxMinutes.toDouble()
                 var thresholdReached = false
 
@@ -111,13 +119,14 @@ object Sweeps {
                 }
 
                 val metrics = Metrics.collect(world.nodes)
-                println("%-9s | %4d | %14.1f | %14.1f%%".format(configName, seed, lifetimeMinutes, metrics.deliveryRatio * 100))
-                lines.add("$configName,$seed,%.2f,%.4f".format(lifetimeMinutes, metrics.deliveryRatio))
+                println(
+                    "%-9s | %4d | %14.1f | %8s | %14.1f%%".format(
+                        configName, seed, lifetimeMinutes, if (thresholdReached) "yes" else "NO", metrics.deliveryRatio * 100,
+                    ),
+                )
+                lines.add("$configName,$seed,%.2f,%b,%.4f".format(lifetimeMinutes, thresholdReached, metrics.deliveryRatio))
             }
         }
-
-        // Reset default
-        ForwardingPolicy.forceEnergyGateOne = false
 
         csvFile.writeText(lines.joinToString("\n") + "\n")
         println("Saved raw CSV to: ${csvFile.path}\n")
@@ -207,12 +216,15 @@ object Sweeps {
         println("--------------+------+---------+------------+----------------------")
 
         for (banding in listOf(true, false)) {
-            ScannerElection.disableBanding = !banding
+            // bandSizePercent = 1 reproduces "no banding": every distinct battery percentage
+            // becomes its own band, so the highest-battery node in a neighbourhood always wins
+            // the tiebreak deterministically instead of rotating with peers in the same band.
+            val tuning = ProtocolTuning(scannerBandSizePercent = if (banding) 10 else 1)
             val configLabel = if (banding) "With 10% Banding" else "Without Banding"
 
             for (seedIdx in 0 until 5) {
                 val seed = masterSeed + (if (banding) 5000 else 6000) + seedIdx
-                val world = Scenario.build("flood", 100, 80.0, 0.05, Random(seed))
+                val world = Scenario.build("flood", 100, 80.0, 0.05, Random(seed), tuning)
                 val totalTicks = 30 * (60_000 / World.TICK_MILLIS).toInt() // 30 virtual minutes
 
                 for (t in 0 until totalTicks) {
@@ -226,9 +238,6 @@ object Sweeps {
                 lines.add("$configLabel,$seed," + "%.4f,%.4f,%.4f".format(metrics.energyMahP95, metrics.energyMahMedian, spread))
             }
         }
-
-        // Reset default
-        ScannerElection.disableBanding = false
 
         csvFile.writeText(lines.joinToString("\n") + "\n")
         println("Saved raw CSV to: ${csvFile.path}\n")

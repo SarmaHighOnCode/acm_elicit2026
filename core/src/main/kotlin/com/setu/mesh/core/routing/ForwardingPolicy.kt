@@ -2,6 +2,7 @@ package com.setu.mesh.core.routing
 
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SosBeacon
+import com.setu.mesh.core.model.MessageType
 import kotlin.random.Random
 
 /** Why a node did or did not re-advertise. Surfaced in the UI so the behaviour is inspectable. */
@@ -67,14 +68,32 @@ object ForwardingPolicy {
         beacon: SosBeacon,
         context: ForwardingContext,
         random: Random = Random.Default,
+        /**
+         * Overrides [energyGate]'s result when non-null. Exists so `:sim` sweeps can compare
+         * "gated" vs "ungated" forwarding without a process-global flag: passing 1.0 disables
+         * the energy gate for exactly the node construction that asks for it, with no risk of
+         * an exception mid-sweep leaving the override stuck for every node built afterward.
+         */
+        energyGateOverride: Double? = null,
     ): RelayDecision {
         if (beacon.ttl <= 0) return RelayDecision.Suppress(SuppressReason.TTL_EXHAUSTED)
 
         // A node's own message is never gated. This is the floor of the whole design.
         if (context.isOwnMessage) return RelayDecision.Relay(1.0)
 
+        val isClearingBeacon = beacon.type == MessageType.RECEIPT || beacon.type == MessageType.SAFE
+        if (isClearingBeacon) {
+            val density = densityDamp(context.neighboursHoldingCopy)
+            if (density <= 0.0) return RelayDecision.Suppress(SuppressReason.DENSITY_DAMPED)
+            return if (random.nextDouble() < density) {
+                RelayDecision.Relay(density)
+            } else {
+                RelayDecision.Suppress(SuppressReason.PROBABILISTIC, density)
+            }
+        }
+
         val critical = beacon.severity() == Severity.CRITICAL
-        val gate = energyGate(context.selfBatteryPercent, context.selfCharging, critical)
+        val gate = energyGateOverride ?: energyGate(context.selfBatteryPercent, context.selfCharging, critical)
         if (gate <= 0.0) return RelayDecision.Suppress(SuppressReason.ENERGY_GATE)
 
         val gradient = altruismGradient(
@@ -95,12 +114,8 @@ object ForwardingPolicy {
         }
     }
 
-    @Volatile
-    var forceEnergyGateOne: Boolean = false
-
     /** Step function on our own remaining battery. */
     fun energyGate(batteryPercent: Int, charging: Boolean, critical: Boolean): Double {
-        if (forceEnergyGateOne) return 1.0
         if (charging) return 1.0
         return when {
             batteryPercent >= 40 -> 1.0
