@@ -140,6 +140,31 @@ class MeshNode(
         refreshSnapshot(nowMillis)
     }
 
+    /**
+     * Emit a RECEIPT for [forMessage] into the mesh. Carriers that hear it drop the original,
+     * which is how delivery confirmation returns airtime and buffer to the network.
+     */
+    fun originateReceipt(forMessage: MessageId, nowMillis: Long = host.nowMillis()): MessageId {
+        val epochMinute = toEpochMinute(nowMillis)
+        val receipt = SosBeacon(
+            type = MessageType.RECEIPT,
+            ttl = DEFAULT_TTL,
+            hops = 0,
+            messageId = forMessage,
+            origin = id,
+            position = host.position() ?: GeoPoint.UNKNOWN,
+            epochMinute = epochMinute,
+            flags = SituationFlags(),
+            souls = 0,
+            originBattery = host.batteryPercent(),
+        )
+        seen.addIfNew(dedupKey(receipt), nowMillis)
+        outbox.remove(forMessage)
+        outbox.put(receipt, nowMillis, isOwn = true)
+        refreshSnapshot(nowMillis)
+        return forMessage
+    }
+
     // ---------------------------------------------------------------- reception
 
     /**
