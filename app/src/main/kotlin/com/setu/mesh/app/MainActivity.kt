@@ -1,0 +1,202 @@
+package com.setu.mesh.app
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.setu.mesh.app.service.SetuService
+import com.setu.mesh.app.ui.theme.SetuTheme
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent {
+            SetuTheme {
+                SetuApp()
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetuApp() {
+    var serviceRunning by remember { mutableStateOf(false) }
+
+    if (!serviceRunning) {
+        PermissionGate(onAllGranted = { serviceRunning = true })
+    } else {
+        RunningScreen()
+    }
+}
+
+@Composable
+private fun RunningScreen() {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = "SETU",
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            Text(
+                text = "Relay active",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            Text(
+                text = "The mesh relay is running.\nListening for emergency beacons.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(32.dp))
+
+            AdvertiserTestControls()
+
+            Spacer(Modifier.height(24.dp))
+
+            ScannerTestControls()
+        }
+    }
+}
+
+/**
+ * B2 verification scaffolding. Drives the service's advertiser with known test patterns so the
+ * bytes on air can be checked against nRF Connect on a second phone. Deleted in B5, when the
+ * real `MeshNode` supplies the beacons.
+ */
+@Composable
+private fun AdvertiserTestControls() {
+    val context = LocalContext.current
+
+    fun send(action: String) {
+        val intent = Intent(context, SetuService::class.java).setAction(action)
+        ContextCompat.startForegroundService(context, intent)
+    }
+
+    Text(
+        text = "Advertiser test (B2)",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    Spacer(Modifier.height(8.dp))
+
+    Button(
+        onClick = { send(SetuService.ACTION_TEST_ONE) },
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+        ),
+    ) {
+        Text("Advertise 1 beacon", color = MaterialTheme.colorScheme.onPrimaryContainer)
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    Button(
+        onClick = { send(SetuService.ACTION_TEST_MANY) },
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+        ),
+    ) {
+        Text(
+            text = "Advertise ${SetuService.TEST_BEACON_COUNT} beacons (carousel)",
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+        )
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    OutlinedButton(
+        onClick = { send(SetuService.ACTION_TEST_STOP) },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Stop advertising", color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+/**
+ * B3 verification scaffolding. Drives the service's scanner so hits can be checked against the
+ * B2 advertiser test controls on a second phone, and so the 6-second rate limiter can be proven
+ * out via logcat. Deleted in B5, when the real `MeshNode` schedules scan windows itself.
+ */
+@Composable
+private fun ScannerTestControls() {
+    val context = LocalContext.current
+
+    fun send(action: String) {
+        val intent = Intent(context, SetuService::class.java).setAction(action)
+        ContextCompat.startForegroundService(context, intent)
+    }
+
+    Text(
+        text = "Scanner test (B3)",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    Spacer(Modifier.height(8.dp))
+
+    Button(
+        onClick = { send(SetuService.ACTION_TEST_SCAN) },
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+        ),
+    ) {
+        Text("Scan for 10s (check logcat)", color = MaterialTheme.colorScheme.onPrimaryContainer)
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    OutlinedButton(
+        onClick = { send(SetuService.ACTION_TEST_SCAN_THROTTLE) },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Throttle test (10x in 20s)", color = MaterialTheme.colorScheme.onSurface)
+    }
+}
