@@ -93,12 +93,70 @@ private fun RunningScreen() {
 
             Spacer(Modifier.height(32.dp))
 
+            MeshControls()
+
+            Spacer(Modifier.height(24.dp))
+
             AdvertiserTestControls()
 
             Spacer(Modifier.height(24.dp))
 
             ScannerTestControls()
         }
+    }
+}
+
+/**
+ * Gate G3 controls: brings up a real `MeshNode` over a real `AndroidLink` and originates a
+ * test SOS. Two phones both tapping "Start mesh" then one tapping "Originate test SOS" is the
+ * whole bring-up test — watch `adb logcat -s SetuMesh` on both to see the beacon cross.
+ */
+@Composable
+private fun MeshControls() {
+    val context = LocalContext.current
+
+    fun send(action: String) {
+        val intent = Intent(context, SetuService::class.java).setAction(action)
+        ContextCompat.startForegroundService(context, intent)
+    }
+
+    Text(
+        text = "Mesh (B4/G3)",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+
+    Spacer(Modifier.height(8.dp))
+
+    Button(
+        onClick = { send(SetuService.ACTION_START_MESH) },
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.secondary,
+        ),
+    ) {
+        Text("Start mesh", color = MaterialTheme.colorScheme.onSecondary)
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    Button(
+        onClick = { send(SetuService.ACTION_ORIGINATE_TEST_SOS) },
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+        ),
+    ) {
+        Text("Originate test SOS", color = MaterialTheme.colorScheme.onPrimaryContainer)
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    OutlinedButton(
+        onClick = { send(SetuService.ACTION_STOP_MESH) },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Stop mesh", color = MaterialTheme.colorScheme.onSurface)
     }
 }
 

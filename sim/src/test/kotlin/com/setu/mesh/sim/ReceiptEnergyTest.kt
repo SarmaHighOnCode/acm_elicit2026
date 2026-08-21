@@ -32,8 +32,9 @@ class ReceiptEnergyTest {
         // docs/POWER.md §2), so discovery is far slower than it was before that mechanism was
         // actually wired into World.tick() -- 30 virtual minutes was tuned against the
         // unwired, always-scanning behaviour and is no longer enough. 90 minutes gives multiple
-        // rendezvous epochs' worth of margin for a message to cross a small cluster.
-        val testDurationTicks = ticksPerMinute * 300
+        // rendezvous epochs' worth of margin for a message to cross a small cluster and for the
+        // RECEIPT to propagate back out to every carrier.
+        val testDurationTicks = ticksPerMinute * 90
 
         // Initially disable gateway uplink so SOS propagates and burns energy for 5 minutes
         val gatewayRole = checkNotNull(gateway.gatewayRole)
@@ -56,18 +57,13 @@ class ReceiptEnergyTest {
         val deliveredMessageId = gatewayRole.delivered.first()
 
         // 1. Assert no node's outbox still contains the delivered message at the end
-        println("DEBUG deliveryTick=$deliveryTick of $testDurationTicks")
-        val offenders = world.nodes.filter { !it.battery.isDead }.filter { node ->
+        val outboxesWithSos = world.nodes.filter { !it.battery.isDead }.count { node ->
             val beacons = node.meshNode.beaconsToAdvertise(100, world.nodes.first().clock.nowMillis())
             beacons.any { encoded ->
                 val decoded = BeaconCodec.decode(encoded)
                 decoded != null && decoded.type == MessageType.SOS && decoded.messageId == deliveredMessageId
             }
         }
-        for (o in offenders) {
-            println("DEBUG offender node=${o.id} tier=${o.meshNode.snapshot.value.tier} battery=${o.battery.percent} isGateway=${o.isGateway}")
-        }
-        val outboxesWithSos = offenders.size
         assertTrue(outboxesWithSos == 0, "Expected all alive nodes to drop the SOS, but $outboxesWithSos nodes still had it")
 
         // 2. Measure energy drop
@@ -88,9 +84,19 @@ class ReceiptEnergyTest {
         println("Energy rate before delivery: $rateBefore mAh/min")
         println("Energy rate after delivery:  $rateAfter mAh/min")
 
-        assertTrue(rateAfter < rateBefore, "Expected energy rate to drop after delivery")
-
         val dropPercent = ((rateBefore - rateAfter) / rateBefore) * 100
         println("Actual energy drop: ${String.format("%.2f", dropPercent)}%")
+
+        // A magnitude threshold, not just direction: the earlier 2-node version of this test
+        // asserted only `rateAfter < rateBefore`, which passes on a 0.001% drop that is pure
+        // noise. 20% is comfortably below the measured ~38% at seed 11 (leaving headroom for
+        // seed-to-seed variance) while still being large enough that a regression which quietly
+        // stopped RECEIPT propagation, or reintroduced the altruism-gradient bug that used to
+        // suppress RECEIPT relay, would fail this rather than slip through as a technically-true
+        // but meaningless direction check.
+        assertTrue(
+            dropPercent > 20.0,
+            "Expected a meaningful mesh-wide energy drop after delivery (>20%%), got %.2f%%".format(dropPercent),
+        )
     }
 }

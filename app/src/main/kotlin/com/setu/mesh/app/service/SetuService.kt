@@ -11,9 +11,16 @@ import android.bluetooth.le.ScanSettings
 import android.util.Log
 import androidx.lifecycle.LifecycleService
 import com.setu.mesh.app.R
+import com.setu.mesh.app.ble.AndroidLink
 import com.setu.mesh.app.ble.BEACON_SIZE_BYTES
 import com.setu.mesh.app.ble.BleAdvertiser
 import com.setu.mesh.app.ble.BleScanner
+import com.setu.mesh.core.engine.MeshNode
+import com.setu.mesh.core.engine.NodeHost
+import com.setu.mesh.core.model.GeoPoint
+import com.setu.mesh.core.model.NodeId
+import com.setu.mesh.core.model.Severity
+import com.setu.mesh.core.model.SituationFlags
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -21,14 +28,17 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 /**
  * Keeps the BLE relay alive when the screen is off. Android will kill a background BLE
  * scanner within minutes without a foreground service, and the mesh dies with it.
  *
- * The service owns the radio. From B5 it will also own the single `MeshNode` and drive
- * [advertiser] from `MeshNode.beaconsToAdvertise()` with the mode and TX power chosen by the
- * power governor. For B2 the ownership is real but the beacons are test patterns.
+ * The service owns the radio. [advertiser]/[scanner] remain for the B2/B3 test actions below,
+ * which are the fastest way to confirm raw bytes are actually on air with nRF Connect. [meshNode]
+ * is the real path: an `AndroidLink` wrapping the same two radios, driven by `MeshNode.run()`
+ * exactly as `:sim` drives it, which is what makes gate G3 (a real beacon crossing two phones)
+ * the same code path as the 200-node simulator.
  */
 class SetuService : LifecycleService() {
 
@@ -39,6 +49,35 @@ class SetuService : LifecycleService() {
 
     /** Tracks the currently running test scan/throttle job so a repeat tap replaces it cleanly. */
     private var scanTestJob: Job? = null
+
+    // ---------------------------------------------------------------- B4/G3: the real mesh node
+
+    /**
+     * Stand-in for the real `AndroidNodeHost` that B5 will build (reading `BatteryManager` and
+     * GPS). Fixed at full battery, not charging, no fix yet -- exactly what
+     * `docs/tasks/B4-android-link.md` calls for so `MeshNode.run()` can be exercised for real
+     * before B5 lands. `hasTrustedClock() = true` assumes the phone's own clock is NTP-synced,
+     * which is the common case and is what lets rendezvous phase-lock without waiting on drift
+     * correction during this test.
+     */
+    private object StubNodeHost : NodeHost {
+        override fun nowMillis(): Long = System.currentTimeMillis()
+        override fun batteryPercent(): Int = 100
+        override fun isCharging(): Boolean = false
+        override fun position(): GeoPoint? = null
+        override fun hasTrustedClock(): Boolean = true
+    }
+
+    /**
+     * Fresh per service instance -- fine for a two-phone bring-up test, but two phones must
+     * not collide, so it is randomly seeded rather than fixed. B5 persists this in
+     * `SharedPreferences` via `NodeIdentity` so it survives restarts.
+     */
+    private val nodeId: NodeId by lazy { NodeId.fromSeed(UUID.randomUUID().toString()) }
+
+    private var androidLink: AndroidLink? = null
+    private var meshNode: MeshNode? = null
+    private var meshJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -119,12 +158,74 @@ class SetuService : LifecycleService() {
                     Log.i(TAG_SCAN_TEST, "Throttle test complete")
                 }
             }
+
+            ACTION_START_MESH -> startMesh()
+            ACTION_STOP_MESH -> stopMesh()
+            ACTION_ORIGINATE_TEST_SOS -> originateTestSos()
         }
 
         return START_STICKY
     }
 
+    /**
+     * Gate G3: brings up a real `MeshNode` over a real `AndroidLink` and starts its run loop.
+     * This is the same `MeshNode.run()` that `:sim` drives against `SimLink` -- the only thing
+     * that differs here is which `Link` it is handed.
+     */
+    private fun startMesh() {
+        if (meshNode != null) {
+            Log.i(TAG_MESH, "Mesh already running for node ${nodeId.short()}")
+            return
+        }
+        val link = AndroidLink(this, scope)
+        val node = MeshNode(nodeId, link, StubNodeHost)
+        androidLink = link
+        meshNode = node
+
+        meshJob = scope.launch { node.run() }
+
+        // Periodic snapshot logging is the only observability this bring-up test needs --
+        // the real UI (B6/B7) reads `MeshNode.snapshot` directly instead of logcat.
+        scope.launch {
+            node.snapshot.collect { snap ->
+                Log.i(
+                    TAG_MESH,
+                    "node=${nodeId.short()} tier=${snap.tier} battery=${snap.batteryPercent}% " +
+                        "carrying=${snap.carrying} neighbours=${snap.neighbourCount} " +
+                        "advertising=${snap.advertising} scanning=${snap.scanning} " +
+                        "ownSosDelivered=${snap.ownSosDelivered}",
+                )
+            }
+        }
+
+        Log.i(TAG_MESH, "Mesh started for node ${nodeId.short()}")
+    }
+
+    private fun stopMesh() {
+        meshJob?.cancel()
+        meshJob = null
+        val link = androidLink
+        androidLink = null
+        meshNode = null
+        if (link != null) {
+            scope.launch { link.shutdown() }
+        }
+        Log.i(TAG_MESH, "Mesh stopped")
+    }
+
+    /** Originates a test SOS on the running mesh node, for the G3 two-phone bring-up test. */
+    private fun originateTestSos() {
+        val node = meshNode
+        if (node == null) {
+            Log.w(TAG_MESH, "Cannot originate SOS: mesh is not running, call ACTION_START_MESH first")
+            return
+        }
+        val messageId = node.originateSos(SituationFlags(severity = Severity.HIGH), souls = 1)
+        Log.i(TAG_MESH, "Originated test SOS $messageId")
+    }
+
     override fun onDestroy() {
+        stopMesh()
         advertiser.stop()
         scanner.stop()
         scanTestJob?.cancel()
@@ -194,5 +295,13 @@ class SetuService : LifecycleService() {
         private const val THROTTLE_TEST_WINDOW_MILLIS = 2_000L // short: keeps windows non-overlapping
 
         private fun ByteArray.toHex(): String = joinToString("") { "%02X".format(it) }
+
+        // ---- B4/G3: the real mesh node ----
+
+        const val ACTION_START_MESH = "com.setu.mesh.app.action.START_MESH"
+        const val ACTION_STOP_MESH = "com.setu.mesh.app.action.STOP_MESH"
+        const val ACTION_ORIGINATE_TEST_SOS = "com.setu.mesh.app.action.ORIGINATE_TEST_SOS"
+
+        private const val TAG_MESH = "SetuMesh"
     }
 }
