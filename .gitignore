@@ -13,3 +13,6 @@ captures/
 !debug.keystore
 .DS_Store
 node_modules/
+
+# Local-only planning material. Never pushed.
+_private/

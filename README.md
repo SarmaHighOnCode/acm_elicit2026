@@ -271,7 +271,6 @@ minSdk 26 · Compose BOM 2026.08.00. Do not bump them during the build window.
 | Document | What it covers |
 |----------|----------------|
 | [`docs/PRD.md`](docs/PRD.md) | product requirements, scope, non-goals, success criteria |
-| [`docs/BUILD-PLAN.md`](docs/BUILD-PLAN.md) | **task-by-task execution plan, split by builder** |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | module boundaries, the seam, data flow |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | wire format, message types, dedup, TTL |
 | [`docs/POWER.md`](docs/POWER.md) | the battery answer in full, with measurement plan |
