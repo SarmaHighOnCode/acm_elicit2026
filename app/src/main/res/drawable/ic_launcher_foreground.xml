@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simple bridge icon for SETU — an amber bridge shape on dark background -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Bridge arch -->
+    <path
+        android:pathData="M30,70 Q54,30 78,70"
+        android:strokeWidth="6"
+        android:strokeColor="#FFA726"
+        android:fillColor="#00000000" />
+    <!-- Bridge deck -->
+    <path
+        android:pathData="M24,70 L84,70"
+        android:strokeWidth="4"
+        android:strokeColor="#FFA726"
+        android:fillColor="#00000000" />
+    <!-- Left pillar -->
+    <path
+        android:pathData="M34,70 L34,82"
+        android:strokeWidth="4"
+        android:strokeColor="#FFA726"
+        android:fillColor="#00000000" />
+    <!-- Right pillar -->
+    <path
+        android:pathData="M74,70 L74,82"
+        android:strokeWidth="4"
+        android:strokeColor="#FFA726"
+        android:fillColor="#00000000" />
+</vector>
