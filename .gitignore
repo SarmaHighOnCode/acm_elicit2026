@@ -16,3 +16,5 @@ node_modules/
 
 # Local-only planning material. Never pushed.
 _private/
+/.agents/skills/lavish
+/.claude/skills/lavish
