@@ -108,7 +108,7 @@ private fun EmptyState(tier: String?, neighbourCount: Int) {
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "No SOS received. SETU is listening.",
+            text = "No SOS received. SafeHop is listening.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

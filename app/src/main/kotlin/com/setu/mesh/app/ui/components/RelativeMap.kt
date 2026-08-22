@@ -18,10 +18,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.setu.mesh.app.ui.theme.LocalIsDarkTheme
 import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SosBeacon
@@ -50,6 +52,9 @@ fun RelativeMap(
 ) {
     var selected by remember { mutableStateOf<SosBeacon?>(null) }
     val plotted = remember(self, beacons) { beacons.map { it to relativeOffsetMetres(self, it.position) } }
+    val isDark = LocalIsDarkTheme.current
+    // In dark mode, overlay colours are white-tinted; in light mode, dark-tinted for contrast.
+    val overlayColor = if (isDark) Color.White else Color(0xFF1A1A1A)
 
     Canvas(
         modifier = modifier
@@ -79,25 +84,26 @@ fun RelativeMap(
         val scale = min(size.width, size.height) / 2f / maxRangeMetres.toFloat()
 
         // Distance rings at thirds of the display range, each labelled in metres.
-        val ringColor = Color.White.copy(alpha = 0.15f)
+        val ringColor = overlayColor.copy(alpha = 0.15f)
         for (fraction in listOf(1.0 / 3, 2.0 / 3, 1.0)) {
             val radiusMetres = maxRangeMetres * fraction
             val radiusPx = (radiusMetres * scale).toFloat()
             drawCircle(color = ringColor, radius = radiusPx, center = centre, style = Stroke(width = 1f))
+            val paintColor = overlayColor.copy(alpha = 0.55f).toArgb()
             drawContext.canvas.nativeCanvas.drawText(
                 "${radiusMetres.toInt()}m",
                 centre.x + 4f,
                 centre.y - radiusPx - 4f,
                 android.graphics.Paint().apply {
-                    color = android.graphics.Color.argb(140, 255, 255, 255)
+                    color = paintColor
                     textSize = 24f
                 },
             )
         }
 
         // Self, at centre.
-        drawCircle(color = Color.White, radius = 8f, center = centre)
-        drawCircle(color = Color.White.copy(alpha = 0.25f), radius = 16f, center = centre)
+        drawCircle(color = overlayColor, radius = 8f, center = centre)
+        drawCircle(color = overlayColor.copy(alpha = 0.25f), radius = 16f, center = centre)
 
         plotted.forEach { (beacon, offset) ->
             val point = toScreenPoint(offset, maxRangeMetres, centre, scale)

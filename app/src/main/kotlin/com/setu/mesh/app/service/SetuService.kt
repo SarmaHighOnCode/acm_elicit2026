@@ -266,7 +266,7 @@ class SetuService : LifecycleService() {
     /**
      * With no [snapshot] yet (service just started, mesh not brought up) this is the generic
      * "relay active" text from strings.xml. Once the mesh is running it shows
-     * "SETU · RELAY — carrying 3 · 5 nearby", matching `docs/tasks/B5-node-host-and-service.md`.
+     * "SafeHop · RELAY — carrying 3 · 5 nearby", matching `docs/tasks/B5-node-host-and-service.md`.
      */
     private fun buildNotification(snapshot: NodeSnapshot? = null): Notification {
         val text = if (snapshot != null) {

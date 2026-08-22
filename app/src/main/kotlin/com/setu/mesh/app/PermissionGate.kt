@@ -107,7 +107,7 @@ fun PermissionGate(onAllGranted: () -> Unit) {
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                text = "SETU",
+                text = "SafeHop",
                 style = MaterialTheme.typography.headlineLarge,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold,
@@ -202,14 +202,14 @@ fun PermissionGate(onAllGranted: () -> Unit) {
                         containerColor = MaterialTheme.colorScheme.secondary,
                     ),
                 ) {
-                    Text("Start SETU relay", color = MaterialTheme.colorScheme.onSecondary)
+                    Text("Start SafeHop relay", color = MaterialTheme.colorScheme.onSecondary)
                 }
             }
 
             if (!hasAdapter) {
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    text = "This device has no Bluetooth adapter. SETU requires BLE hardware.",
+                    text = "This device has no Bluetooth adapter. SafeHop requires BLE hardware.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )

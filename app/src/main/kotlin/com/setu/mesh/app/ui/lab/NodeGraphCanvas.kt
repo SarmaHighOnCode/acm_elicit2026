@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import com.setu.mesh.app.ui.theme.LocalIsDarkTheme
 import com.setu.mesh.core.power.PowerTier
 import kotlin.math.ceil
 
@@ -24,6 +25,11 @@ fun NodeGraphCanvas(
     onTapNode: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isDark = LocalIsDarkTheme.current
+    // Links and dead-node colours adapt to background brightness.
+    val linkColor = if (isDark) Color(0x33FFFFFF) else Color(0x33000000)
+    val deadColor = if (isDark) Color(0xFF555555) else Color(0xFF9E9E9E)
+
     Canvas(
         modifier = modifier
             .fillMaxSize()
@@ -45,8 +51,8 @@ fun NodeGraphCanvas(
     ) {
         val alive = nodes.filter { it.alive }
         val points = alive.map { Offset(it.x * size.width, it.y * size.height) }
-        drawLinks(alive, points, size)
-        nodes.forEach { node -> drawNode(node, Offset(node.x * size.width, node.y * size.height)) }
+        drawLinks(alive, points, size, linkColor)
+        nodes.forEach { node -> drawNode(node, Offset(node.x * size.width, node.y * size.height), deadColor) }
     }
 }
 
@@ -62,7 +68,7 @@ fun NodeGraphCanvas(
  * `drawLine` calls dominate); this matters because the node count is the obvious dial to turn up
  * for a bigger demo, and 500 nodes all-pairs is 125,000 checks per frame.
  */
-private fun DrawScope.drawLinks(alive: List<LabNodeView>, points: List<Offset>, canvasSize: Size) {
+private fun DrawScope.drawLinks(alive: List<LabNodeView>, points: List<Offset>, canvasSize: Size, linkColor: Color) {
     if (alive.size < 2) return
 
     val cell = LINK_DISTANCE_PX
@@ -102,20 +108,20 @@ private fun DrawScope.drawLinks(alive: List<LabNodeView>, points: List<Offset>, 
                 val dx = point.x - q.x
                 val dy = point.y - q.y
                 if (dx * dx + dy * dy <= maxDistSq) {
-                    drawLine(color = LinkColor, start = point, end = q, strokeWidth = 1f)
+                    drawLine(color = linkColor, start = point, end = q, strokeWidth = 1f)
                 }
             }
         }
     }
 }
 
-private fun DrawScope.drawNode(node: LabNodeView, center: Offset) {
+private fun DrawScope.drawNode(node: LabNodeView, center: Offset, deadColor: Color) {
     val radius = when {
         node.isGateway -> NODE_RADIUS_PX * 1.6f
         node.justRelayed -> NODE_RADIUS_PX * 1.3f
         else -> NODE_RADIUS_PX
     }
-    val color = if (!node.alive) DeadColor else tierColor(node.tier)
+    val color = if (!node.alive) deadColor else tierColor(node.tier)
 
     if (node.justRelayed && node.alive) {
         drawCircle(color = color.copy(alpha = 0.3f), radius = radius * 2f, center = center)
@@ -142,8 +148,6 @@ private val FORWARD_NEIGHBOURS = listOf(
     1 to 1,
 )
 
-private val DeadColor = Color(0xFF555555)
-private val LinkColor = Color(0x33FFFFFF)
 
 private const val NODE_RADIUS_PX = 10f
 private const val LINK_DISTANCE_PX = 140f
