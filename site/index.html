@@ -1,0 +1,783 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SafeHop — offline mesh SOS relay</title>
+<meta name="description" content="SafeHop is an offline mesh SOS relay for disaster zones. A complete, routable SOS beacon in 24 bytes, relayed phone to phone over Bluetooth LE when cell towers are down.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Staatliches&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg:        #0A0A0B;
+    --surface:   #141416;
+    --surface-2: #1E1E22;
+    --text:      #E8E8E6;
+    --muted:     #6B6B70;
+    --amber:     #FFA726;
+    --amber-dim: #C77800;
+    --red:       #EF5350;
+    --green:     #66BB6A;
+    --orange:    #FB8C00;
+    --rule:      rgba(255,255,255,0.07);
+
+    --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+    --font-display: 'Archivo Black', ui-monospace, SFMono-Regular, monospace;
+    --font-wordmark: 'Staatliches', 'Archivo Black', ui-monospace, SFMono-Regular, monospace;
+
+    --content-max: 1100px;
+    --edge-l: clamp(20px, 8vw, 160px);
+    --edge-r: clamp(20px, 4vw, 90px);
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: inherit; }
+
+  .container {
+    max-width: var(--content-max);
+    margin-left: var(--edge-l);
+    margin-right: var(--edge-r);
+  }
+
+  .section {
+    padding: 96px 0;
+    border-bottom: 1px solid var(--rule);
+    opacity: 0;
+    transform: translateY(14px);
+    animation: reveal 0.7s ease-out forwards;
+  }
+  .section:last-of-type { border-bottom: none; }
+  .section:nth-of-type(1) { animation-delay: 0.05s; }
+  .section:nth-of-type(2) { animation-delay: 0.15s; }
+  .section:nth-of-type(3) { animation-delay: 0.25s; }
+  .section:nth-of-type(4) { animation-delay: 0.35s; }
+  .section:nth-of-type(5) { animation-delay: 0.45s; }
+
+  @keyframes reveal {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .section-num {
+    font-family: var(--font-display);
+    font-size: clamp(28px, 4vw, 40px);
+    color: var(--muted);
+    letter-spacing: 0.02em;
+    margin: 0 0 28px;
+  }
+
+  h1, h2, h3 { font-weight: 600; margin: 0; }
+
+  .muted { color: var(--muted); }
+
+  .rule {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 40px 0;
+  }
+
+  /* ---------- 01 · hero ---------- */
+
+  .hero { padding-top: 64px; }
+
+  .hero-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+
+  .wordmark-block { position: relative; }
+
+  .wordmark {
+    font-family: var(--font-wordmark);
+    font-size: clamp(52px, 10vw, 108px);
+    line-height: 1;
+    letter-spacing: 0.02em;
+    margin: 0;
+    position: relative;
+    z-index: 2;
+  }
+
+  .translit {
+    margin-top: 10px;
+    font-size: 14px;
+    color: var(--muted);
+    position: relative;
+    z-index: 2;
+  }
+
+  .beacon {
+    position: absolute;
+    top: 40%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: clamp(180px, 26vw, 300px);
+    height: clamp(180px, 26vw, 300px);
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .beacon circle {
+    fill: none;
+    stroke: var(--amber);
+    stroke-width: 1.5;
+    transform-origin: center;
+    transform-box: fill-box;
+    opacity: 0;
+    animation: beacon-pulse 4s ease-out infinite;
+  }
+  .beacon circle:nth-child(2) { animation-delay: 1.3s; }
+  .beacon circle:nth-child(3) { animation-delay: 2.6s; }
+
+  @keyframes beacon-pulse {
+    0%   { transform: scale(0.25); opacity: 0.9; }
+    80%  { opacity: 0.08; }
+    100% { transform: scale(1.05); opacity: 0; }
+  }
+
+  .thesis {
+    font-size: clamp(22px, 3vw, 30px);
+    line-height: 1.45;
+    font-weight: 500;
+    max-width: 20ch;
+    margin: 56px 0 0;
+  }
+  .thesis .lede { color: var(--amber); }
+
+  .hero-sub {
+    margin-top: 20px;
+    color: var(--muted);
+    font-size: 14px;
+    letter-spacing: 0.02em;
+  }
+
+  .cta-row {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    flex-wrap: wrap;
+    margin-top: 48px;
+  }
+
+  .btn-primary {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    text-decoration: none;
+    background: var(--amber);
+    color: #14100A;
+    padding: 16px 24px;
+    border: 1px solid var(--amber);
+    font-family: var(--font-mono);
+  }
+  .btn-primary:hover { background: var(--amber-dim); border-color: var(--amber-dim); }
+  .btn-primary .label {
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 0.02em;
+  }
+  .btn-primary .meta {
+    font-size: 12px;
+    opacity: 0.75;
+  }
+
+  .link-quiet {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 14px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 2px;
+  }
+  .link-quiet:hover { color: var(--text); border-color: var(--muted); }
+
+  /* ---------- 02 · problem ---------- */
+
+  blockquote {
+    margin: 0 0 32px;
+    padding-left: 20px;
+    border-left: 2px solid var(--rule);
+    color: var(--text);
+    font-size: 16px;
+    max-width: 68ch;
+  }
+
+  .challenge {
+    margin: 40px 0;
+    padding: 24px 28px;
+    background: var(--surface);
+    border-left: 2px solid var(--amber);
+    max-width: 68ch;
+  }
+  .challenge p { margin: 0; font-size: 17px; line-height: 1.55; }
+  .challenge .tag {
+    display: block;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 10px;
+  }
+
+  .prose {
+    max-width: 68ch;
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.75;
+  }
+
+  /* ---------- 03 · 24 bytes ---------- */
+
+  .headline {
+    font-size: clamp(24px, 3.4vw, 34px);
+    font-weight: 600;
+    max-width: 22ch;
+    margin: 0 0 40px;
+  }
+
+  .derivation {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--muted);
+    background: var(--surface);
+    padding: 20px 24px;
+    max-width: 520px;
+    overflow-x: auto;
+    margin: 0 0 56px;
+  }
+  .derivation .final { color: var(--text); }
+
+  .packet-wrap { margin-bottom: 20px; }
+
+  .ruler {
+    display: flex;
+    margin-bottom: 4px;
+    padding: 0 1px;
+  }
+  .ruler span {
+    flex: 1 1 0;
+    font-size: 10px;
+    color: var(--muted);
+    text-align: left;
+  }
+
+  .packet-diagram {
+    display: flex;
+    width: 100%;
+    border: 1px solid var(--rule);
+  }
+
+  .byte-field {
+    position: relative;
+    flex-grow: var(--bytes);
+    flex-basis: 0;
+    flex-shrink: 0;
+    min-width: 0;
+    border-right: 1px solid var(--rule);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--font-mono);
+    padding: 12px 8px;
+    height: 92px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: flex-start;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .byte-field:last-child { border-right: none; }
+  .byte-field:hover,
+  .byte-field:focus-visible,
+  .byte-field.is-open {
+    background: var(--surface-2);
+  }
+  .byte-field.hl-amber { border-top: 3px solid var(--amber); }
+  .byte-field.hl-amber .fname { color: var(--amber); }
+  .byte-field.hl-muted { border-top: 3px solid var(--muted); }
+  .byte-field.hl-muted .fname { color: var(--muted); }
+  .byte-field:not(.hl-amber):not(.hl-muted) { border-top: 3px solid transparent; }
+
+  .byte-field .fname {
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .byte-field .fbytes {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .byte-field.narrow .fname {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    white-space: nowrap;
+  }
+  .byte-field.narrow .fbytes { display: none; }
+
+  .field-tip {
+    position: absolute;
+    left: 0;
+    bottom: 100%;
+    margin-bottom: 8px;
+    width: max-content;
+    max-width: 240px;
+    background: var(--surface-2);
+    border: 1px solid var(--rule);
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 10px 12px;
+    z-index: 5;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.12s ease;
+    pointer-events: none;
+  }
+  .byte-field:hover .field-tip,
+  .byte-field:focus-visible .field-tip,
+  .byte-field.is-open .field-tip {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .packet-list { display: none; }
+  .packet-list .field-row {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .packet-list .field-row:last-child { border-bottom: none; }
+  .packet-list .field-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .packet-list .field-head .offset {
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 11px;
+  }
+  .packet-list .field-head.hl-amber { color: var(--amber); }
+  .packet-list .field-head.hl-muted { color: var(--muted); }
+  .packet-list .field-desc {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  @media (max-width: 700px) {
+    .packet-wrap { display: none; }
+    .packet-list { display: block; }
+  }
+
+  .caption {
+    margin-top: 28px;
+    font-size: 13px;
+    color: var(--muted);
+    max-width: 60ch;
+    line-height: 1.6;
+  }
+
+  /* ---------- 04 · architecture ---------- */
+
+  .subhead {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 20px;
+  }
+
+  .layer-stack {
+    border: 1px solid var(--rule);
+    margin-bottom: 12px;
+  }
+  .layer-row {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 16px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--rule);
+    border-left: 3px solid transparent;
+    font-size: 13px;
+  }
+  .layer-row:last-child { border-bottom: none; }
+  .layer-row .lname {
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text);
+  }
+  .layer-row .ldesc { color: var(--muted); }
+  .layer-row.link-row {
+    border-left-color: var(--amber);
+    background: var(--surface);
+  }
+  .layer-row.link-row .lname { color: var(--amber); }
+  .layer-row.link-row .ldesc { color: var(--text); }
+
+  .arch-block { margin-bottom: 88px; }
+  .arch-block:last-child { margin-bottom: 0; }
+
+  .ladder {
+    border: 1px solid var(--rule);
+    margin-bottom: 12px;
+  }
+  .ladder-row {
+    display: grid;
+    grid-template-columns: 120px 160px 1fr;
+    gap: 16px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--rule);
+    font-size: 13px;
+    align-items: baseline;
+  }
+  .ladder-row:last-child { border-bottom: none; }
+  .ladder-row .tier { font-weight: 700; letter-spacing: 0.03em; }
+  .ladder-row .batt { color: var(--muted); }
+  .ladder-row .behaviour { color: var(--text); }
+  .tier.t-green { color: var(--green); }
+  .tier.t-amber { color: var(--amber); }
+  .tier.t-orange { color: var(--orange); }
+  .tier.t-red { color: var(--red); }
+
+  @media (max-width: 640px) {
+    .layer-row, .ladder-row {
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
+  }
+
+  /* ---------- 05 · footer ---------- */
+
+  footer.section {
+    padding: 56px 0 72px;
+    animation-delay: 0.5s;
+  }
+  .footer-row {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .footer-row a { text-decoration: none; border-bottom: 1px solid var(--rule); }
+  .footer-row a:hover { color: var(--text); border-color: var(--muted); }
+  .status-note {
+    margin-top: 24px;
+    font-size: 12px;
+    color: var(--muted);
+    max-width: 60ch;
+    line-height: 1.6;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .section {
+      animation: none !important;
+      opacity: 1 !important;
+      transform: none !important;
+    }
+    .beacon circle {
+      animation: none !important;
+      opacity: 0.35 !important;
+      transform: scale(0.7) !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<main>
+
+  <section class="section hero container" id="s01">
+    <div class="section-num">01</div>
+
+    <div class="hero-top">
+      <div class="wordmark-block">
+        <svg class="beacon" viewBox="0 0 140 140" aria-hidden="true">
+          <circle cx="70" cy="70" r="20"></circle>
+          <circle cx="70" cy="70" r="20"></circle>
+          <circle cx="70" cy="70" r="20"></circle>
+        </svg>
+        <h1 class="wordmark">SAFEHOP</h1>
+        <div class="translit">one hop at a time, when nothing else can reach you</div>
+      </div>
+    </div>
+
+    <p class="thesis">
+      <span class="lede">A disaster mesh is not a bandwidth problem. It is an
+      energy-allocation problem.</span><br>
+      SafeHop routes battery, not packets.
+    </p>
+
+    <div class="hero-sub">Offline mesh SOS relay · Hacks 11.0 · Problem Statement #15</div>
+
+    <div class="cta-row">
+      <a class="btn-primary" href="https://github.com/SarmaHighOnCode/acm_elicit2026/releases/latest/download/setu-debug.apk">
+        <span class="label">Download APK</span>
+        <span class="meta">debug build · 12 MB · Android 8.0+</span>
+      </a>
+      <a class="link-quiet" href="https://github.com/SarmaHighOnCode/acm_elicit2026">View source</a>
+    </div>
+  </section>
+
+  <section class="section container" id="s02">
+    <div class="section-num">02</div>
+    <div class="subhead">The problem</div>
+
+    <blockquote>
+      During severe floods, cyclones, or earthquakes, mobile cell towers frequently collapse,
+      leaving stranded victims unable to send emergency SOS requests even when rescue teams are
+      nearby. Build a device-to-device mesh emergency relay system.
+    </blockquote>
+
+    <div class="challenge">
+      <span class="tag">Challenge question</span>
+      <p>How does the relay chain keep working when every device in it is running on a
+      nearly-dead battery?</p>
+    </div>
+
+    <p class="prose">
+      When the tower dies, every app on the phone dies with it. But the phone still has two
+      radios that never needed a tower. In a flooded apartment block there are dozens of phones
+      within a hundred metres of each other, and at least one is usually near something with a
+      working uplink. The hardware is already there. Nothing is using it.
+    </p>
+  </section>
+
+  <section class="section container" id="s03">
+    <div class="section-num">03</div>
+    <h2 class="headline">A complete, routable SOS in 24 bytes.</h2>
+
+    <pre class="derivation">  31 bytes   BLE legacy advertisement payload
+ −  3 bytes  Flags AD structure
+ −  4 bytes  Service Data header (length + type + 16-bit UUID)
+ ─────────
+<span class="final"> = 24 bytes  ← the entire SafeHop beacon</span></pre>
+
+    <div class="packet-wrap">
+      <div class="ruler" id="ruler"></div>
+      <div class="packet-diagram" id="packetDiagram"></div>
+    </div>
+
+    <div class="packet-list" id="packetList"></div>
+
+    <p class="caption">
+      Relaying is re-advertising. No connection, no pairing, no handshake — which is why it
+      still works at 4% battery.
+    </p>
+  </section>
+
+  <section class="section container" id="s04">
+    <div class="section-num">04</div>
+
+    <div class="arch-block">
+      <div class="subhead">Layer stack</div>
+      <div class="layer-stack">
+        <div class="layer-row">
+          <span class="lname">APPLICATION</span>
+          <span class="ldesc">SOS screen · Responder map · Mesh Lab</span>
+        </div>
+        <div class="layer-row">
+          <span class="lname">ENGINE</span>
+          <span class="ldesc">MeshNode — origination, relay, snapshot</span>
+        </div>
+        <div class="layer-row">
+          <span class="lname">ROUTING</span>
+          <span class="ldesc">SeenSet · ForwardingPolicy · Outbox</span>
+        </div>
+        <div class="layer-row">
+          <span class="lname">POWER</span>
+          <span class="ldesc">PowerTier · RendezvousScheduler · ScannerElection</span>
+        </div>
+        <div class="layer-row link-row">
+          <span class="lname">LINK</span>
+          <span class="ldesc">← the seam: opaque bytes, nothing above knows why</span>
+        </div>
+        <div class="layer-row">
+          <span class="lname">RADIO</span>
+          <span class="ldesc">AndroidLink (real BLE) &nbsp;|&nbsp; SimLink (200 virtual nodes)</span>
+        </div>
+      </div>
+      <p class="caption">
+        The same <code>MeshNode</code> runs on a phone driving real Bluetooth radios and in a
+        200-node simulator. Not a mock that happens to agree — the same class. That is what
+        makes the scale claims honest.
+      </p>
+    </div>
+
+    <div class="arch-block">
+      <div class="subhead">Power ladder</div>
+      <div class="ladder">
+        <div class="ladder-row">
+          <span class="tier t-green">BRIDGE</span>
+          <span class="batt">&gt;60% or charging</span>
+          <span class="behaviour">continuous scan · carries the neighbourhood</span>
+        </div>
+        <div class="ladder-row">
+          <span class="tier t-green">RELAY</span>
+          <span class="batt">30–60%</span>
+          <span class="behaviour">scan ~30% duty · connects on demand</span>
+        </div>
+        <div class="ladder-row">
+          <span class="tier t-amber">GOSSIP</span>
+          <span class="batt">15–30%</span>
+          <span class="behaviour">1 Hz beacons · listens in sync windows only</span>
+        </div>
+        <div class="ladder-row">
+          <span class="tier t-orange">FLARE</span>
+          <span class="batt">5–15%</span>
+          <span class="behaviour">advertise only · ears open 1s per minute</span>
+        </div>
+        <div class="ladder-row">
+          <span class="tier t-red">EMBER</span>
+          <span class="batt">&lt;5%</span>
+          <span class="behaviour">beacon every 10s · never scans</span>
+        </div>
+      </div>
+      <p class="caption">
+        Scanning costs roughly 100× what advertising costs, so the ladder cuts listening long
+        before it cuts shouting. An EMBER node is deliberately deaf — still broadcasting, still
+        findable.
+      </p>
+    </div>
+  </section>
+
+  <footer class="section container" id="s05">
+    <div class="footer-row">
+      <a href="https://github.com/SarmaHighOnCode/acm_elicit2026">github.com/SarmaHighOnCode/acm_elicit2026</a>
+      <span>66 automated tests · protocol core has zero Android dependencies</span>
+    </div>
+    <p class="status-note">
+      Debug build, unsigned. Android will warn on install — that is expected for sideloading.
+    </p>
+  </footer>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var FIELDS = [
+    { name: "verType",   bytes: 1, desc: "3-bit protocol version, 3-bit message type" },
+    { name: "ttlHops",   bytes: 1, desc: "4-bit hop budget, 4-bit hops travelled" },
+    { name: "msgId",     bytes: 4, desc: "deduplication key" },
+    { name: "originId",  bytes: 3, desc: "24-bit node identifier" },
+    { name: "lat",       bytes: 4, desc: "latitude, degrees × 1e7" },
+    { name: "lon",       bytes: 4, desc: "longitude, degrees × 1e7" },
+    { name: "epochMin",  bytes: 3, desc: "minutes since 2024-01-01Z; also the mesh's shared clock" },
+    { name: "flags",     bytes: 1, desc: "2-bit severity + trapped / medical / water-rising / vulnerable / mobility" },
+    { name: "souls",     bytes: 1, desc: "how many people are at this location" },
+    { name: "battery",   bytes: 1, desc: "originator's battery %; this one byte drives the whole routing policy", hl: "amber" },
+    { name: "crc8",      bytes: 1, desc: "CRC-8/ATM integrity check", hl: "muted" }
+  ];
+
+  var TOTAL_BYTES = FIELDS.reduce(function (sum, f) { return sum + f.bytes; }, 0); // 24
+
+  var ruler = document.getElementById("ruler");
+  var diagram = document.getElementById("packetDiagram");
+  var list = document.getElementById("packetList");
+
+  // Offset ruler: one tick per byte, 0..23
+  for (var i = 0; i < TOTAL_BYTES; i++) {
+    var tick = document.createElement("span");
+    tick.textContent = i;
+    ruler.appendChild(tick);
+  }
+
+  var offset = 0;
+  FIELDS.forEach(function (field) {
+    var start = offset;
+    var end = offset + field.bytes - 1;
+    offset += field.bytes;
+
+    // --- horizontal diagram cell ---
+    var cell = document.createElement("div");
+    cell.className = "byte-field" + (field.bytes <= 1 ? " narrow" : "");
+    if (field.hl) cell.classList.add("hl-" + field.hl);
+    cell.style.setProperty("--bytes", field.bytes);
+    cell.setAttribute("tabindex", "0");
+    cell.setAttribute("role", "button");
+    cell.setAttribute("aria-expanded", "false");
+    cell.setAttribute("aria-label", field.name + ", " + field.bytes + " byte" + (field.bytes > 1 ? "s" : "") + ": " + field.desc);
+
+    var fname = document.createElement("span");
+    fname.className = "fname";
+    fname.textContent = field.name;
+
+    var fbytes = document.createElement("span");
+    fbytes.className = "fbytes";
+    fbytes.textContent = field.bytes + "B";
+
+    var tip = document.createElement("span");
+    tip.className = "field-tip";
+    tip.textContent = field.desc;
+
+    cell.appendChild(fname);
+    cell.appendChild(fbytes);
+    cell.appendChild(tip);
+
+    cell.addEventListener("click", function () {
+      var wasOpen = cell.classList.contains("is-open");
+      Array.prototype.forEach.call(diagram.querySelectorAll(".byte-field.is-open"), function (el) {
+        el.classList.remove("is-open");
+        el.setAttribute("aria-expanded", "false");
+      });
+      if (!wasOpen) {
+        cell.classList.add("is-open");
+        cell.setAttribute("aria-expanded", "true");
+      }
+    });
+
+    diagram.appendChild(cell);
+
+    // --- stacked mobile row (always shows description) ---
+    var row = document.createElement("div");
+    row.className = "field-row";
+
+    var head = document.createElement("div");
+    head.className = "field-head" + (field.hl ? " hl-" + field.hl : "");
+
+    var nameSpan = document.createElement("span");
+    nameSpan.textContent = field.name;
+
+    var offsetSpan = document.createElement("span");
+    offsetSpan.className = "offset";
+    offsetSpan.textContent = (start === end ? "byte " + start : "bytes " + start + "–" + end);
+
+    head.appendChild(nameSpan);
+    head.appendChild(offsetSpan);
+
+    var descDiv = document.createElement("div");
+    descDiv.className = "field-desc";
+    descDiv.textContent = field.desc;
+
+    row.appendChild(head);
+    row.appendChild(descDiv);
+    list.appendChild(row);
+  });
+})();
+</script>
+
+</body>
+</html>

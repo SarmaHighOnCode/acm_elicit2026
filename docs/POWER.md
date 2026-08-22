@@ -25,7 +25,7 @@ is cheap.
 
 Two consequences drive the whole protocol:
 
-1. **The base case must be broadcast, not connect.** SETU relays by re-advertising a 24-byte
+1. **The base case must be broadcast, not connect.** SafeHop relays by re-advertising a 24-byte
    beacon (see [`PROTOCOL.md`](PROTOCOL.md) §1). No connection, no pairing, no GATT.
 2. **When battery falls, cut listening before shouting.** Being *findable* matters more than
    being *sociable*. A dying phone should be selfish.
@@ -60,7 +60,7 @@ Two nodes each listening 5% of the time, with independent phase, overlap **0.25%
 They will essentially never hear each other. The network is dead, and both phones report that
 everything is fine.
 
-SETU derives every wake window from **absolute wall-clock time**, not from each node's own
+SafeHop derives every wake window from **absolute wall-clock time**, not from each node's own
 uptime:
 
 ```
@@ -96,7 +96,7 @@ shouters**.
 The obvious way to arrange that is to negotiate roles. But negotiation traffic costs exactly the
 energy we are trying to save, and it fails precisely when the network is degraded.
 
-SETU already puts each node's battery level in every beacon. That one byte is enough:
+SafeHop already puts each node's battery level in every beacon. That one byte is enough:
 
 - Every node sees the same neighbourhood table, built from beacons it overheard for free.
 - Every node applies the same deterministic ranking.
@@ -125,7 +125,7 @@ Under partition, each partition simply elects its own scanners. Nothing needs to
 ## 4. Effort flows toward whoever is worse off
 
 Standard DTN energy-aware routing (EA-Epidemic and relatives) forwards copies toward
-**higher**-energy nodes. SETU inverts that into a rule that is simultaneously energy-optimal and
+**higher**-energy nodes. SafeHop inverts that into a rule that is simultaneously energy-optimal and
 ethically defensible:
 
 > **Relay preferentially for people worse off than you.**
@@ -173,7 +173,7 @@ In a mesh, *confirming delivery is how you reclaim capacity.*
 
 Below **3%**, conservation is pointless — the phone is going to die either way.
 
-SETU stops conserving and spends the remainder burst-advertising its entire outbox at 250 ms
+SafeHop stops conserving and spends the remainder burst-advertising its entire outbox at 250 ms
 intervals, so a healthier neighbour picks up custody before the lights go out.
 
 [`PowerGovernor.kt`](../core/src/main/kotlin/com/setu/mesh/core/power/PowerGovernor.kt)
@@ -188,7 +188,7 @@ intervals, so a healthier neighbour picks up custody before the lights go out.
 
 Every radio operation is billed in mAh so the app can say, in plain language:
 
-> *SETU used 1.8% of your battery in 3 hours and carried 47 messages for 12 people.*
+> *SafeHop used 1.8% of your battery in 3 hours and carried 47 messages for 12 people.*
 
 This is a **product feature, not instrumentation**. An app that quietly drains a phone gets
 uninstalled before the disaster, and a mesh with no participating nodes relays nothing. The

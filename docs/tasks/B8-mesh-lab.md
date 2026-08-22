@@ -9,7 +9,7 @@
 
 **Repo:** https://github.com/SarmaHighOnCode/acm_elicit2026 (branch `main`)
 
-SETU is an offline mesh SOS relay over BLE. With only two or three phones on stage, a live demo
+SafeHop is an offline mesh SOS relay over BLE. With only two or three phones on stage, a live demo
 cannot show multi-hop behaviour at scale. Mesh Lab runs the `:sim` module **in-app** and renders
 a few hundred virtual nodes, so a judge can watch the mesh heal — and break it themselves.
 

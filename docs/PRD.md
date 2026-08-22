@@ -1,4 +1,4 @@
-# SETU — Product Requirements
+# SafeHop — Product Requirements
 
 **Problem Statement #15 · Disaster Management · Hacks 11.0**
 Status: active build · Owner: 2 builders · Window: <24 h wall clock
@@ -44,7 +44,7 @@ charged phones and fails in the field for three reasons:
    cost roughly 100× what advertising costs. A protocol whose base case is *connect* cannot run
    at 4%.
 
-SETU's answer is to make **residual battery a first-class protocol input** rather than a
+SafeHop's answer is to make **residual battery a first-class protocol input** rather than a
 constraint to be respected. Battery level is carried in every packet and feeds routing,
 scheduling, and role election. See [`POWER.md`](POWER.md).
 
@@ -57,7 +57,7 @@ scheduling, and role election. See [`POWER.md`](POWER.md).
 | **Responder** | Rescue worker with a device, on the ground | See who needs help, where, how badly. Not duplicate another team's work. |
 
 The relay user is the one most builds forget, and they are the ones the whole network depends on.
-If SETU is not trustworthy about battery, it gets uninstalled before the disaster and there is no
+If SafeHop is not trustworthy about battery, it gets uninstalled before the disaster and there is no
 mesh.
 
 ## 5. Requirements
@@ -108,7 +108,7 @@ architecture diagram.
 
 ## 7. Scope boundaries
 
-SETU is a **transport for emergencies**, not a messenger. Explicitly *not* in scope:
+SafeHop is a **transport for emergencies**, not a messenger. Explicitly *not* in scope:
 
 - General chat. The moment it carries arbitrary conversation, airtime and battery go to chatter
   instead of to SOS traffic, and the energy argument collapses.

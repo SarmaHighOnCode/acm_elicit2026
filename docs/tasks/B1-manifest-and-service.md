@@ -8,7 +8,7 @@
 
 **Repo:** https://github.com/SarmaHighOnCode/acm_elicit2026 (branch `main`)
 
-SETU is an offline mesh SOS relay. When cell towers collapse in a flood or earthquake, phones
+SafeHop is an offline mesh SOS relay. When cell towers collapse in a flood or earthquake, phones
 relay 24-byte emergency beacons to each other over Bluetooth LE until one reaches a device with
 connectivity. Residual battery drives routing decisions.
 
@@ -38,7 +38,7 @@ Compose BOM 2026.08.00 · `namespace = "com.setu.mesh.app"` · `applicationId = 
 ## Task
 
 Make `:app` build, install, and launch to a placeholder screen, with all the permissions and the
-foreground service SETU needs. No Bluetooth code in this task — just the shell.
+foreground service SafeHop needs. No Bluetooth code in this task — just the shell.
 
 ## Files you may create
 
@@ -124,7 +124,7 @@ Also check and surface, without crashing:
 amber/red accents — the SOS UI is designed for darkness, and on OLED it draws less power, which
 ties the UI to the project's energy thesis. Material 3.
 
-For now: show `PermissionGate`, then a placeholder "SETU running" screen.
+For now: show `PermissionGate`, then a placeholder "SafeHop running" screen.
 
 ## Acceptance
 

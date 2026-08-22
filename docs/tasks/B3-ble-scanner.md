@@ -8,9 +8,9 @@
 
 **Repo:** https://github.com/SarmaHighOnCode/acm_elicit2026 (branch `main`)
 
-SETU is an offline mesh SOS relay. Emergency messages are 24 bytes and ride inside BLE legacy
+SafeHop is an offline mesh SOS relay. Emergency messages are 24 bytes and ride inside BLE legacy
 advertisement service data, so relaying means hearing a beacon and re-advertising it. Scanning is
-the expensive half of the radio — roughly 100× the cost of advertising — which is why SETU scans
+the expensive half of the radio — roughly 100× the cost of advertising — which is why SafeHop scans
 in short, scheduled windows rather than continuously.
 
 Read first: `docs/PROTOCOL.md` §1–2, `docs/POWER.md` §1–2.
@@ -34,7 +34,7 @@ Consequences for this task:
 - log every `startScan` with a timestamp and the gap since the previous one
 - if a caller asks for a scan too soon, **queue or drop it and log loudly** — never just call
   through
-- SETU's 60-second rendezvous epoch issues at most one scan per epoch, comfortably inside the
+- SafeHop's 60-second rendezvous epoch issues at most one scan per epoch, comfortably inside the
   budget. **Do not "optimise" it to a faster cycle.** The epoch length exists because of this
   limit.
 
