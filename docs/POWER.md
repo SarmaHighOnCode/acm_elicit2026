@@ -50,6 +50,11 @@ still shouting** — it cannot hear anyone, and it is still findable by anyone w
 A **charging** device jumps straight to BRIDGE whatever its level. It is gaining energy, so
 spending it on the neighbourhood costs its owner nothing.
 
+This is the steady-state ladder — the duty cycle a node sits at between events. It is not the
+*only* thing that decides when the radio listens: §2 below describes attentive mode, which
+temporarily overrides the scan window and rendezvous gate on top of whatever tier a node is
+currently in, without changing the tier itself or anything in this table.
+
 ---
 
 ## 2. Phase-locked rendezvous — the failure mode nobody demos
@@ -85,6 +90,59 @@ duty-cycle by rapidly stopping and starting scans hit this, get silently throttl
 discovering anything — with no error. One scan per 60-second epoch is comfortably inside the
 budget. The epoch design is *why* this constraint is not a problem, not a patch applied after
 hitting it.
+
+### Attentive mode — spending latency budget only when it is affordable
+
+The steady-state ladder above trades latency for battery on purpose: at one rendezvous window per
+epoch, discovery is uniform on 0–60 s for BRIDGE/RELAY, worse for lower tiers. That is the right
+default for a phone sitting in a pocket for hours, and it is the wrong default the instant there
+is an actual emergency in progress and a human is watching the screen.
+
+Attentive mode is a bounded, guarded override that trades the two orders of magnitude back the
+other way for as long as it is justified. When it is active, `PowerGovernor.plan()` forces:
+
+- `scanThisEpoch = true` — bypasses the epoch cadence and the scanner election, so this node
+  listens every epoch regardless of tier or who else is volunteering.
+- `inRendezvousWindow = true` — bypasses the 1 s wall-clock gate.
+- `scanWindowMillis = ATTENTIVE_SCAN_WINDOW_MILLIS` (12 s) — see the arithmetic below.
+
+Nothing else changes: tier, beacon interval, and `mayOpenConnections` are exactly what the normal
+ladder says. Attentive mode only ever widens *when* the radio listens, never *how loud* the node
+is or what it may connect to.
+
+**What turns it on**, in [`MeshNode.kt`](../core/src/main/kotlin/com/setu/mesh/core/engine/MeshNode.kt):
+
+1. The app is in the foreground (`MeshNode.setAttentive(true)`, driven from `MainActivity`'s
+   `onStart`/`onStop`). The screen being on already costs an order of magnitude more than the
+   radio, and a user watching the app expects it to be live.
+2. For two minutes after this node originates its own SOS — the originator wants its `RECEIPT`
+   back fast.
+3. For two minutes after hearing *any* SOS beacon, ours or a neighbour's — the neighbourhood is
+   demonstrably live, so relay onward promptly instead of sitting on it for up to a minute.
+
+**Why 12 seconds, not something shorter:** Android throttles `startScan` *calls*, not scan
+*duration* — 5 calls per rolling 30 s, silently, with no error and no results past the limit. So
+attentive mode buys duty cycle from window *length*:
+
+```
+one startScan every 12 s  →  2.5 calls per 30 s   (limit is 5)   ✅  wide margin
+duty cycle ≈ 100% of the time the loop isn't doing something else
+```
+
+A 3 s window looping every 3 s would be ~10 calls per 30 s — over the limit, silently throttled,
+and indistinguishable from working code while discovering nothing. See
+[`BleScanner.MIN_SCAN_START_GAP_MILLIS`](../app/src/main/kotlin/com/setu/mesh/app/ble/BleScanner.kt).
+
+**The battery guard is the reason this is defensible.** Attentive is refused, silently, when:
+
+- the node is in last-gasp (`batteryPercent <= 3% && !charging`) — unchanged from §6 below, or
+- `!charging && batteryPercent < 20%`.
+
+A phone below 20% and not charging behaves exactly as it does without this feature at all, so
+every low-battery survival claim elsewhere in this document still holds. A charging phone is
+always eligible, at any level — it is gaining energy, so the spend is free.
+
+[`PowerGovernor.kt`](../core/src/main/kotlin/com/setu/mesh/core/power/PowerGovernor.kt)
 
 ---
 
