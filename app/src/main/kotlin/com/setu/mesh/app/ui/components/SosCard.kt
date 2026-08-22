@@ -21,17 +21,33 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.setu.mesh.app.ui.proximityLabel
 import com.setu.mesh.core.codec.BeaconCodec
+import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SosBeacon
+import kotlin.math.roundToInt
 
 /**
  * One carried SOS. Tapping expands a detail block with the raw 24 bytes as hex -- genuinely
  * useful during integration (the fastest way to confirm two phones agree on what was sent) and
  * a reasonable thing to show a technical judge.
+ *
+ * [self] and [selfDegraded] drive the cardinal-bearing line ("NE · 43 m"): shown only when both
+ * positions are known and the self fix is not degraded (see [com.setu.mesh.app.ui.isSelfFixDegraded]).
+ * A 220 dp map cannot be read to the metre, so this line -- not the map -- is what a responder
+ * actually acts on.
  */
 @Composable
-fun SosCard(beacon: SosBeacon, nowMillis: Long, modifier: Modifier = Modifier) {
+fun SosCard(
+    beacon: SosBeacon,
+    nowMillis: Long,
+    self: GeoPoint?,
+    selfDegraded: Boolean,
+    modifier: Modifier = Modifier,
+    /** Smoothed direct-signal strength, or null if this origin was not heard first-hand. */
+    signalDbm: Int? = null,
+) {
     var expanded by remember { mutableStateOf(false) }
     val (color, label) = severityPresentation(beacon.flags.severity)
 
@@ -55,6 +71,28 @@ fun SosCard(beacon: SosBeacon, nowMillis: Long, modifier: Modifier = Modifier) {
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(situationLine(beacon), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (self != null && !selfDegraded && beacon.position != GeoPoint.UNKNOWN) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${compassPoint(bearingDegrees(self, beacon.position))} · " +
+                            "${distanceMetres(self, beacon.position).roundToInt()} m",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                // Radio proximity, shown above the GPS bearing line because up close it is the
+                // more trustworthy of the two: at five metres the combined GPS error exceeds
+                // the separation, while RSSI is at its most informative.
+                proximityLabel(signalDbm)?.let { label ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Signal: $label · ${signalDbm} dBm · direct",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "${beacon.ageMinutes(nowMillis)} min ago · ${beacon.hops} hop${if (beacon.hops == 1) "" else "s"} · " +

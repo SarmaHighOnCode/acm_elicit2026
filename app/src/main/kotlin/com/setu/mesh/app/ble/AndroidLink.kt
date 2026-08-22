@@ -16,6 +16,7 @@ import com.setu.mesh.core.link.RadioProfile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 
@@ -50,6 +51,13 @@ class AndroidLink(
             maxBundleBytes = MAX_BUNDLE_BYTES,
             canAdvertise = advertiser.canAdvertise,
         )
+
+    /**
+     * Transport telemetry, deliberately not part of `Link`: it is "what is my radio doing",
+     * not a routing input, and `:core` must stay unable to see it.
+     */
+    val advertiseSettingsInEffect: StateFlow<android.bluetooth.le.AdvertiseSettings?>
+        get() = advertiser.settingsInEffect
 
     private val _events = MutableSharedFlow<LinkEvent>(extraBufferCapacity = EVENTS_BUFFER_CAPACITY)
     override val events: Flow<LinkEvent> = _events.asSharedFlow()

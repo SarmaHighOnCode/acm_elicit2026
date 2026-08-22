@@ -47,11 +47,12 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
     }
 
     val now = System.currentTimeMillis()
-    val selfOriginRaw = snapshot?.id?.raw ?: -1
-    val sorted = sortForResponder(viewModel.carried, selfOriginRaw)
+    val sorted = sortForResponder(viewModel.carried)
     val known = sorted.filter { hasKnownPosition(it) }
     val unknown = sorted.filter { !hasKnownPosition(it) }
-    val selfPosition = viewModel.selfPosition
+    val selfFix = viewModel.selfFix
+    val selfPosition = selfFix?.point
+    val degraded = isSelfFixDegraded(selfFix, now)
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (sorted.isEmpty()) {
@@ -66,7 +67,14 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
                     item { SectionHeader("Position known") }
                     if (selfPosition != null) {
                         item {
-                            RelativeMap(self = selfPosition, beacons = known, onTapBeacon = {})
+                            RelativeMap(
+                                self = selfPosition,
+                                beacons = known,
+                                onTapBeacon = {},
+                                nowMillis = now,
+                                selfFix = selfFix,
+                                degraded = degraded,
+                            )
                         }
                     } else {
                         item {
@@ -77,11 +85,27 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
                             )
                         }
                     }
-                    items(known) { beacon -> SosCard(beacon = beacon, nowMillis = now) }
+                    items(known) { beacon ->
+                        SosCard(
+                            beacon = beacon,
+                            nowMillis = now,
+                            self = selfPosition,
+                            selfDegraded = degraded,
+                            signalDbm = viewModel.signalDbmByOrigin[beacon.origin.raw],
+                        )
+                    }
                 }
                 if (unknown.isNotEmpty()) {
                     item { SectionHeader("Position unknown") }
-                    items(unknown) { beacon -> SosCard(beacon = beacon, nowMillis = now) }
+                    items(unknown) { beacon ->
+                        SosCard(
+                            beacon = beacon,
+                            nowMillis = now,
+                            self = selfPosition,
+                            selfDegraded = degraded,
+                            signalDbm = viewModel.signalDbmByOrigin[beacon.origin.raw],
+                        )
+                    }
                 }
             }
         }
