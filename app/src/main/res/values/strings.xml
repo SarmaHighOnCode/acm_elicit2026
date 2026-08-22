@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">SETU</string>
-    <string name="notification_channel_name">SETU Mesh Relay</string>
+    <string name="app_name">SafeHop</string>
+    <string name="notification_channel_name">SafeHop Mesh Relay</string>
     <string name="notification_channel_description">Keeps the emergency relay active when the screen is off</string>
-    <string name="notification_title">SETU relay active</string>
+    <string name="notification_title">SafeHop relay active</string>
     <string name="notification_text">Listening for emergency beacons</string>
 </resources>

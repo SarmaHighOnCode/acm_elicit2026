@@ -8,7 +8,7 @@
 
 **Repo:** https://github.com/SarmaHighOnCode/acm_elicit2026 (branch `main`)
 
-SETU is an offline mesh SOS relay over BLE. This screen is what a stranded person uses. Design
+SafeHop is an offline mesh SOS relay over BLE. This screen is what a stranded person uses. Design
 for the actual situation: **panicking, one-handed, possibly in darkness, possibly in water, phone
 at 4%.** Every interaction assumption you would normally make is wrong here.
 
@@ -96,7 +96,7 @@ Add one plain-language line explaining the current tier, e.g. for EMBER:
 
 ### 5. Energy honesty
 ```
-SETU used 1.8% of your battery in 3h and carried 47 messages for 12 people.
+SafeHop used 1.8% of your battery in 3h and carried 47 messages for 12 people.
 ```
 From `energyMilliampHours` and `beaconsRelayed`. **If the numbers are not available yet, show
 nothing** — do not display a placeholder that looks like a real measurement.
@@ -114,7 +114,7 @@ swipe from the top.
 
 ## Explicitly do not build
 
-- a chat interface — SETU is a transport for emergencies, not a messenger
+- a chat interface — SafeHop is a transport for emergencies, not a messenger
 - a map on this screen (that is B7)
 - onboarding, tutorials, or a splash screen
 - settings beyond the debug battery override

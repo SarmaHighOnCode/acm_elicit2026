@@ -8,7 +8,7 @@
 
 **Repo:** https://github.com/SarmaHighOnCode/acm_elicit2026 (branch `main`)
 
-SETU is an offline mesh SOS relay. A complete emergency message is encoded in **24 bytes** —
+SafeHop is an offline mesh SOS relay. A complete emergency message is encoded in **24 bytes** —
 exactly the usable payload of a BLE *legacy* advertisement — so that relaying is just
 "re-advertise this with TTL−1". No connection, no pairing, no GATT. Connectionless broadcast is
 roughly 100× cheaper than scanning, which is what lets the mesh keep working on nearly-dead

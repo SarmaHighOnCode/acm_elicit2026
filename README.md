@@ -1,9 +1,10 @@
-# SETU
+# SafeHop
 
 **Offline mesh SOS relay for signal-dead zones.**
 Hacks 11.0 — Problem Statement #15, Disaster Management.
 
-*Setu* (सेतु) is Sanskrit for **bridge**. Every phone running SETU is one span of it.
+Every phone running SafeHop is one hop in a chain that gets a message out — one span of a bridge
+built from strangers' phones.
 
 ---
 
@@ -25,7 +26,7 @@ Most attempts at this build a chat app and put a red button on it. That misreads
 
 > **A disaster mesh is not a bandwidth problem. It is an energy-allocation problem.**
 > Every byte forwarded costs joules that a stranded person may need in order to stay reachable.
-> **SETU routes battery, not packets.**
+> **SafeHop routes battery, not packets.**
 
 Everything below falls out of that one sentence — including the answer to the challenge question,
 which is not a feature bolted on at the end but the reason the protocol is shaped the way it is.
@@ -42,7 +43,7 @@ advertisement:
  −  3 bytes  Flags AD structure          (length + type + data)
  −  4 bytes  Service Data AD structure   (length + type + 16-bit UUID)
  ─────────
- = 24 bytes  usable  ← the entire SETU beacon
+ = 24 bytes  usable  ← the entire SafeHop beacon
 ```
 
 Relaying is *re-advertising*. A node hears a beacon, decrements its TTL, and puts it back on the
@@ -99,7 +100,7 @@ uniformly — it removes *scanning* first and protects *advertising* to the very
 | **EMBER** | <5% | beacon every 10 s, **never scans** |
 
 An EMBER node is deliberately *deaf*. It is still shouting, and it is still findable. A dying
-phone should be selfish, and SETU encodes exactly when that switch flips.
+phone should be selfish, and SafeHop encodes exactly when that switch flips.
 
 ### 2. Phase-locked rendezvous — why low duty cycles don't silently kill the mesh
 
@@ -107,7 +108,7 @@ This is the failure mode nobody demos. Two nodes each listening 5% of the time, 
 phase, overlap **0.25%** of the time. They will essentially never hear each other, the network is
 dead, and both phones cheerfully report that everything is fine.
 
-SETU derives every wake window from **absolute wall-clock time**, not from each node's uptime:
+SafeHop derives every wake window from **absolute wall-clock time**, not from each node's uptime:
 
 ```
 epoch  = floor(unixMillis / 60_000)
@@ -122,7 +123,7 @@ window a BRIDGE node is listening through.
 Clock quality degrades gracefully: GPS time → last NTP sync → consensus drift correction from the
 `epochMin` field that every beacon already carries.
 
-*Bonus:* one scan per 60 s epoch also keeps SETU inside Android's hard limit of **5 `startScan`
+*Bonus:* one scan per 60 s epoch also keeps SafeHop inside Android's hard limit of **5 `startScan`
 calls per 30 seconds** — a throttle that silently breaks naive duty-cycling implementations.
 
 ### 3. Zero-message scanner election
@@ -141,7 +142,7 @@ phone. Under partition, each partition simply elects its own scanners.
 
 ### 4. Effort flows toward whoever is worse off
 
-The DTN literature says route copies toward higher-energy nodes. SETU inverts it into something
+The DTN literature says route copies toward higher-energy nodes. SafeHop inverts it into something
 that is both energy-optimal and ethically right: **relay preferentially for people worse off than
 you.** If the originator has more battery than you do and is not critical, damp hard — they can
 afford to keep shouting for themselves; you may not be able to.
@@ -156,7 +157,7 @@ mesh reclaims airtime and buffer from messages that no longer need moving.
 
 ### 6. Last-gasp flush
 
-Below 3% battery, conservation is pointless — the phone is going to die either way. SETU stops
+Below 3% battery, conservation is pointless — the phone is going to die either way. SafeHop stops
 conserving and spends the remainder burst-advertising everything it is carrying at 250 ms
 intervals, so a healthier neighbour picks up custody before the lights go out.
 
@@ -164,7 +165,7 @@ intervals, so a healthier neighbour picks up custody before the lights go out.
 
 ### Backed by an energy ledger, not an assertion
 
-Every radio operation is billed in estimated mAh, so the app can state plainly: *"SETU used 1.8%
+Every radio operation is billed in estimated mAh, so the app can state plainly: *"SafeHop used 1.8%
 of your battery in 3 hours and carried 47 messages for 12 people."* An app that quietly drains a
 phone gets uninstalled before the disaster, and a mesh with no nodes relays nothing — so
 transparency is a survival feature.
@@ -275,18 +276,18 @@ minSdk 26 · Compose BOM 2026.08.00. Do not bump them during the build window.
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | wire format, message types, dedup, TTL |
 | [`docs/POWER.md`](docs/POWER.md) | the battery answer in full, with measurement plan |
 | [`docs/DEMO.md`](docs/DEMO.md) | the five-minute demo script |
-| [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) | what SETU does and does not defend against |
+| [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) | what SafeHop does and does not defend against |
 | [`docs/tasks/`](docs/tasks/) | Android build tasks, B1–B8, with acceptance criteria |
 | [`docs/adr/`](docs/adr/) | architecture decision records |
 
 ## Prior art
 
-SETU is not the first BLE mesh messenger and does not claim to be. [Bridgefy], [Briar] and
+SafeHop is not the first BLE mesh messenger and does not claim to be. [Bridgefy], [Briar] and
 [bitchat] all relay messages over Bluetooth; bitchat in particular validates the dual-role
 GATT + controlled-flood + TTL-7 approach on Android. [Meshtastic] does the same over LoRa.
 
 What is different here is the **objective function**. Those projects optimise for message
-delivery and treat battery as a constraint to be respected. SETU treats residual battery as the
+delivery and treat battery as a constraint to be respected. SafeHop treats residual battery as the
 scarce resource being *allocated* — it is an input to routing, to scheduling, to role election,
 and to what the app tells you about itself.
 

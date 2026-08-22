@@ -52,7 +52,7 @@ Tap SOS again on A. It still arrives on B.
 Then the part most people miss:
 
 > "Here's the failure nobody demos. Two phones each listening 5% of the time, at random,
-> overlap 0.25% of the time. Your mesh is dead and both phones say they're fine. So SETU derives
+> overlap 0.25% of the time. Your mesh is dead and both phones say they're fine. So SafeHop derives
 > its wake windows from wall-clock time — every phone in the area wakes in the same one-second
 > window, and they never send a single message to agree on that."
 
@@ -83,7 +83,7 @@ Hand the phone to a judge.
 
 > "Most people build a chat app and put a red button on it. We think a disaster mesh isn't a
 > bandwidth problem — it's an energy-allocation problem. Every byte you forward costs battery
-> that a stranded person may need to stay reachable. So SETU routes battery, not packets."
+> that a stranded person may need to stay reachable. So SafeHop routes battery, not packets."
 
 ---
 

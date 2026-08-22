@@ -8,7 +8,7 @@
 
 **Repo:** https://github.com/SarmaHighOnCode/acm_elicit2026 (branch `main`)
 
-SETU is an offline mesh SOS relay over BLE. The protocol lives in `:core` as pure Kotlin with no
+SafeHop is an offline mesh SOS relay over BLE. The protocol lives in `:core` as pure Kotlin with no
 Android dependency; it reaches the radio only through a frozen interface called `Link`. The same
 protocol code runs on a phone (this task) and in a 200-node simulator, which is what makes the
 project's scale claims honest.
@@ -149,7 +149,7 @@ temporary stub returning battery 100 / charging false / null position if B5 is n
 **This is integration gate G3 — the single most important checkpoint in the project.**
 
 On **two physical devices**, both in **airplane mode with Bluetooth on**:
-1. Both running SETU with the service started.
+1. Both running SafeHop with the service started.
 2. Device A originates an SOS.
 3. **Device B logs a `BeaconHeard` whose 24 bytes match A's exactly.**
 

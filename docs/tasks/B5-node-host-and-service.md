@@ -8,7 +8,7 @@
 
 **Repo:** https://github.com/SarmaHighOnCode/acm_elicit2026 (branch `main`)
 
-SETU is an offline mesh SOS relay over BLE. The protocol (`:core`) is pure Kotlin and reaches the
+SafeHop is an offline mesh SOS relay over BLE. The protocol (`:core`) is pure Kotlin and reaches the
 platform through two frozen interfaces: `Link` (the radio, done in B4) and `NodeHost` (the
 machine — clock, battery, GPS). **Battery is a first-class protocol input**: nearly every routing
 and scheduling decision is a function of it.
@@ -118,7 +118,7 @@ serviceScope.launch { node.run() }
 Expose `node.snapshot` (a `StateFlow<NodeSnapshot>`) to the UI via a binder or a singleton holder.
 
 Update the notification live from the snapshot:
-> **SETU · RELAY** — carrying 3 · 5 nearby
+> **SafeHop · RELAY** — carrying 3 · 5 nearby
 
 Keep the update rate low (every few seconds, not every tick) — notification churn is itself a
 battery cost, which would be an embarrassing thing to get wrong in this particular app.

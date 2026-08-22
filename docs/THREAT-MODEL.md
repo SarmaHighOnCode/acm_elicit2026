@@ -1,6 +1,6 @@
 # Threat model
 
-What SETU defends against, what it does not, and why. Written plainly because an emergency system
+What SafeHop defends against, what it does not, and why. Written plainly because an emergency system
 that overstates its guarantees is worse than one that admits its limits.
 
 ## Assumptions
@@ -10,7 +10,7 @@ that overstates its guarantees is worse than one that admits its limits.
 - The network is degraded: no internet, no time server, partitioned neighbourhoods.
 - Most participants are ordinary people who installed an app, not hardened nodes.
 
-## What SETU defends against
+## What SafeHop defends against
 
 | Threat | Defence |
 |--------|---------|
@@ -21,7 +21,7 @@ that overstates its guarantees is worse than one that admits its limits.
 | **One phone being drained on everyone's behalf** | Scanner election rotates duty via epoch-mixed tiebreak and 10% battery banding |
 | **Stale messages consuming airtime forever** | 6 h outbox expiry for non-own messages; `RECEIPT`/`SAFE` cause immediate drop |
 
-## What SETU does NOT defend against
+## What SafeHop does NOT defend against
 
 Stated directly. Each of these is real.
 
@@ -45,7 +45,7 @@ detects this.
 An SOS broadcasts your position in the clear to everyone in radio range. That is the point: you
 want to be found. But it also means a hostile party in range learns where you are.
 
-Not appropriate for adversarial contexts (conflict zones, protest). SETU is built for natural
+Not appropriate for adversarial contexts (conflict zones, protest). SafeHop is built for natural
 disasters, where the population in range is overwhelmingly other victims and responders.
 
 ### Traffic analysis — **unmitigated**
@@ -65,7 +65,7 @@ adversary could suppress the neighbourhood's scanning duty.
 
 ### Denial of service by jamming — **out of scope**
 
-2.4 GHz jamming defeats SETU completely. No software mitigation exists.
+2.4 GHz jamming defeats SafeHop completely. No software mitigation exists.
 
 ### Malicious `RECEIPT` injection — **partially mitigated**
 

@@ -1,4 +1,4 @@
-# SETU Protocol v1
+# SafeHop Protocol v1
 
 Wire format and forwarding rules. Implemented in
 [`core/src/main/kotlin/com/setu/mesh/core/`](../core/src/main/kotlin/com/setu/mesh/core/).
@@ -22,7 +22,7 @@ structure, and a Service Data structure with a 16-bit UUID costs four more:
 
 If the whole message fits in 24 bytes, a relay is just *"broadcast this again with TTL−1"* — no
 connection, no pairing, no GATT, no handshake. That is the cheapest possible relay, and it is why
-SETU keeps working on a phone that cannot afford anything else.
+SafeHop keeps working on a phone that cannot afford anything else.
 
 **Design rule: if a field does not earn its byte, it does not ship.**
 
@@ -129,7 +129,7 @@ P(relay) = w_severity × energyGate(selfBattery) × altruismGradient × densityD
 | `densityDamp` | `min(1, 3 / k)` where *k* = distinct neighbours already re-advertising this id |
 
 **The altruism gradient inverts the textbook rule.** Standard DTN routes copies toward
-higher-energy nodes. SETU relays preferentially *for people worse off than you*: if the
+higher-energy nodes. SafeHop relays preferentially *for people worse off than you*: if the
 originator has more battery than you and is not critical, they can afford to keep shouting and
 you may not be able to. Energy-optimal and ethically right at the same time.
 

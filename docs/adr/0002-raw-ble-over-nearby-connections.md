@@ -8,7 +8,7 @@ Two candidate transports for phone-to-phone communication with no infrastructure
 
 **Google Nearby Connections** (`P2P_CLUSTER`) handles discovery, connection and encryption over
 BLE / Bluetooth Classic / Wi-Fi Direct in roughly a hundred lines. It does *not* provide
-multi-hop routing, so SETU's routing layer would still be ours.
+multi-hop routing, so SafeHop's routing layer would still be ours.
 
 **Raw BLE** means writing a GATT server and client, packing advertisement bytes by hand,
 negotiating MTU, and handling per-vendor Bluetooth quirks.
@@ -22,7 +22,7 @@ Raw BLE GATT + advertising.
 ## Why
 
 Nearby Connections is a **black box for power control**. It decides when to advertise, when to
-scan, and which radio to use. SETU's entire thesis is that residual battery should drive those
+scan, and which radio to use. SafeHop's entire thesis is that residual battery should drive those
 decisions — the power ladder, phase-locked rendezvous, and scanner election all require direct
 control of duty cycle. Handing that to a library removes the differentiator and leaves a
 competent but ordinary mesh chat app.

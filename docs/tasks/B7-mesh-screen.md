@@ -8,7 +8,7 @@
 
 **Repo:** https://github.com/SarmaHighOnCode/acm_elicit2026 (branch `main`)
 
-SETU is an offline mesh SOS relay over BLE. This screen is the **responder** view: what a rescue
+SafeHop is an offline mesh SOS relay over BLE. This screen is the **responder** view: what a rescue
 worker or a bystander-with-signal sees. It lists the SOS messages this device has received or is
 carrying.
 
@@ -95,7 +95,7 @@ If `position == GeoPoint.UNKNOWN`, show the card in a separate **"Position unkno
 never plot it at the origin.
 
 ### 4. Empty state
-> *No SOS received. SETU is listening.*
+> *No SOS received. SafeHop is listening.*
 
 Show tier and neighbour count so the user can tell the difference between "nothing is happening"
 and "the app is broken". That distinction matters a great deal in a disaster.
