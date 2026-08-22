@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<!--
+  Source for og-card.png (the social-preview image referenced in index.html's og:image tag).
+  Not linked from the live site itself -- kept here only so the card can be regenerated if the
+  design changes. Regenerate with headless Edge/Chrome from the site/ directory:
+
+    msedge --headless --disable-gpu --screenshot=og-card.png --window-size=1200,630 \
+      "file:///<absolute-path-to>/og-card-src.html"
+-->
+<html><head>
+<meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Staatliches&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    width:1200px; height:630px;
+    background:#0A0A0B;
+    background-image:
+      radial-gradient(circle at 78% 50%, rgba(255,167,38,0.10) 0%, transparent 45%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 40px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 40px);
+    font-family:'IBM Plex Mono',monospace;
+    display:flex; flex-direction:column; justify-content:center;
+    padding:0 90px;
+    position:relative;
+    overflow:hidden;
+  }
+  .rings { position:absolute; right:60px; top:50%; transform:translateY(-50%); width:420px; height:420px; }
+  .rings circle { fill:none; stroke:#FFA726; }
+  .num { color:#4a4a4f; font-size:22px; letter-spacing:0.15em; margin-bottom:18px; }
+  h1 { font-family:'Staatliches'; color:#F2F1EE; font-size:132px; letter-spacing:0.02em; line-height:1; }
+  .thesis { color:#FFA726; font-size:30px; margin-top:26px; max-width:760px; line-height:1.4; }
+  .sub { color:#6B6B70; font-size:18px; margin-top:22px; letter-spacing:0.02em; }
+  .rule { width:120px; height:3px; background:#FFA726; margin-top:30px; }
+</style>
+</head>
+<body>
+  <svg class="rings" viewBox="0 0 420 420">
+    <circle cx="210" cy="210" r="60" opacity="0.55" stroke-width="2"/>
+    <circle cx="210" cy="210" r="130" opacity="0.30" stroke-width="2"/>
+    <circle cx="210" cy="210" r="200" opacity="0.14" stroke-width="2"/>
+  </svg>
+  <div class="num">01 · HACKS 11.0 · PS #15</div>
+  <h1>SAFEHOP</h1>
+  <div class="rule"></div>
+  <div class="thesis">A disaster mesh is not a bandwidth problem.<br>It is an energy-allocation problem.</div>
+  <div class="sub">Offline mesh SOS relay · 24-byte beacon · Bluetooth LE</div>
+</body></html>
