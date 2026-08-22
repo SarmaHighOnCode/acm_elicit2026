@@ -92,13 +92,62 @@
 
   /* ---------- 01 · hero ---------- */
 
-  .hero { padding-top: 64px; }
+  .hero { padding-top: 40px; padding-bottom: 56px; }
+
+  /* Override container for hero: symmetrical edges, no max-width cap */
+  .hero.container {
+    max-width: none;
+    margin-left: var(--edge-l);
+    margin-right: var(--edge-l);
+  }
+
+  .hero-layout {
+    display: grid;
+    grid-template-columns: 2fr 3fr;
+    gap: 48px;
+    align-items: center;
+  }
 
   .hero-top {
     display: flex;
     align-items: flex-start;
     gap: 32px;
     flex-wrap: wrap;
+  }
+
+  /* --- hero video (neumorphic dark) --- */
+  .hero-video-wrap {
+    position: relative;
+    border-radius: 14px;
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+    background: var(--surface);
+    border: 1px solid rgba(255,255,255,0.06);
+    width: 100%;
+    justify-self: end;
+    box-shadow:
+      -6px -6px 16px rgba(255,255,255,0.04),
+       6px  6px 20px rgba(0,0,0,0.5),
+       inset 0 1px 0 rgba(255,255,255,0.05);
+    transition: box-shadow 0.3s ease;
+  }
+  .hero-video-wrap:hover {
+    box-shadow:
+      -8px -8px 20px rgba(255,255,255,0.05),
+       8px  8px 28px rgba(0,0,0,0.6),
+       inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  .hero-video-wrap video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  @media (max-width: 860px) {
+    .hero-layout {
+      grid-template-columns: 1fr;
+    }
   }
 
   .wordmark-block { position: relative; }
@@ -151,16 +200,16 @@
   }
 
   .thesis {
-    font-size: clamp(22px, 3vw, 30px);
+    font-size: clamp(20px, 2.8vw, 28px);
     line-height: 1.45;
     font-weight: 500;
-    max-width: 20ch;
-    margin: 56px 0 0;
+    max-width: 22ch;
+    margin: 32px 0 0;
   }
   .thesis .lede { color: var(--amber); }
 
   .hero-sub {
-    margin-top: 20px;
+    margin-top: 14px;
     color: var(--muted);
     font-size: 14px;
     letter-spacing: 0.02em;
@@ -171,7 +220,7 @@
     align-items: center;
     gap: 28px;
     flex-wrap: wrap;
-    margin-top: 48px;
+    margin-top: 28px;
   }
 
   .btn-primary {
@@ -397,6 +446,101 @@
     line-height: 1.6;
   }
 
+  /* ---------- skeleton loader ---------- */
+
+  .skeleton-loader {
+    position: absolute;
+    inset: 0;
+    background: var(--surface);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.4s ease, visibility 0.4s ease;
+  }
+  .skeleton-loader.loaded {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  .skeleton-loader::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      110deg,
+      var(--surface) 30%,
+      var(--surface-2) 50%,
+      var(--surface) 70%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.8s ease-in-out infinite;
+  }
+  .skeleton-loader .skeleton-icon {
+    position: relative;
+    z-index: 1;
+    color: var(--muted);
+    opacity: 0.4;
+  }
+
+  @keyframes skeleton-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* ---------- video showcase ---------- */
+
+  .video-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    margin-top: 48px;
+  }
+
+  .video-card {
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    aspect-ratio: 16 / 9;
+    cursor: pointer;
+  }
+  .video-card video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .video-card-label {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 16px 14px 14px;
+    background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%);
+    z-index: 3;
+  }
+  .video-card-label .vc-title {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text);
+  }
+  .video-card-label .vc-desc {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+    line-height: 1.4;
+  }
+
+  @media (max-width: 700px) {
+    .video-grid {
+      grid-template-columns: 1fr;
+      max-width: 300px;
+    }
+  }
+
   /* ---------- 04 · architecture ---------- */
 
   .subhead {
@@ -511,32 +655,49 @@
   <section class="section hero container" id="s01">
     <div class="section-num">01</div>
 
-    <div class="hero-top">
-      <div class="wordmark-block">
-        <svg class="beacon" viewBox="0 0 140 140" aria-hidden="true">
-          <circle cx="70" cy="70" r="20"></circle>
-          <circle cx="70" cy="70" r="20"></circle>
-          <circle cx="70" cy="70" r="20"></circle>
-        </svg>
-        <h1 class="wordmark">SAFEHOP</h1>
-        <div class="translit">one hop at a time, when nothing else can reach you</div>
+    <div class="hero-layout">
+      <div>
+        <div class="hero-top">
+          <div class="wordmark-block">
+            <svg class="beacon" viewBox="0 0 140 140" aria-hidden="true">
+              <circle cx="70" cy="70" r="20"></circle>
+              <circle cx="70" cy="70" r="20"></circle>
+              <circle cx="70" cy="70" r="20"></circle>
+            </svg>
+            <h1 class="wordmark">SAFEHOP</h1>
+            <div class="translit">one hop at a time, when nothing else can reach you</div>
+          </div>
+        </div>
+
+        <p class="thesis">
+          <span class="lede">A disaster mesh is not a bandwidth problem. It is an
+          energy-allocation problem.</span><br>
+          SafeHop routes battery, not packets.
+        </p>
+
+        <div class="hero-sub">Offline mesh SOS relay · Hacks 11.0 · Problem Statement #15</div>
+
+        <div class="cta-row">
+          <a class="btn-primary" href="https://github.com/SarmaHighOnCode/acm_elicit2026/releases/latest/download/setu-debug.apk">
+            <span class="label">Download APK</span>
+            <span class="meta">debug build · 12 MB · Android 8.0+</span>
+          </a>
+          <a class="link-quiet" href="https://github.com/SarmaHighOnCode/acm_elicit2026">View source</a>
+        </div>
       </div>
-    </div>
 
-    <p class="thesis">
-      <span class="lede">A disaster mesh is not a bandwidth problem. It is an
-      energy-allocation problem.</span><br>
-      SafeHop routes battery, not packets.
-    </p>
-
-    <div class="hero-sub">Offline mesh SOS relay · Hacks 11.0 · Problem Statement #15</div>
-
-    <div class="cta-row">
-      <a class="btn-primary" href="https://github.com/SarmaHighOnCode/acm_elicit2026/releases/latest/download/setu-debug.apk">
-        <span class="label">Download APK</span>
-        <span class="meta">debug build · 12 MB · Android 8.0+</span>
-      </a>
-      <a class="link-quiet" href="https://github.com/SarmaHighOnCode/acm_elicit2026">View source</a>
+      <!-- Hero video -->
+      <div class="hero-video-wrap" id="heroVideoWrap">
+        <div class="skeleton-loader" id="heroSkeleton">
+          <svg class="skeleton-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+        </div>
+        <video controls autoplay muted loop playsinline preload="none" data-src="videos/safehop1080p.webm">
+          <source data-src="videos/safehop1080p.webm" type="video/webm">
+          <source data-src="videos/safehop1080p.mp4" type="video/mp4">
+        </video>
+      </div>
     </div>
   </section>
 
@@ -585,6 +746,58 @@
       Relaying is re-advertising. No connection, no pairing, no handshake — which is why it
       still works at 4% battery.
     </p>
+  </section>
+
+  <section class="section container" id="s-videos">
+    <div class="section-num">—</div>
+    <div class="subhead">In action</div>
+    <h2 class="headline">See the mesh work.</h2>
+
+    <div class="video-grid">
+
+      <div class="video-card">
+        <div class="skeleton-loader">
+          <svg class="skeleton-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        </div>
+        <video muted loop playsinline preload="none" data-src="videos/MeshBeacon_SOSBroadcast.webm">
+          <source data-src="videos/MeshBeacon_SOSBroadcast.webm" type="video/webm">
+          <source data-src="videos/MeshBeacon_SOSBroadcast.mp4" type="video/mp4">
+        </video>
+        <div class="video-card-label">
+          <div class="vc-title">SOS Broadcast</div>
+          <div class="vc-desc">A beacon is created and starts advertising over BLE.</div>
+        </div>
+      </div>
+
+      <div class="video-card">
+        <div class="skeleton-loader">
+          <svg class="skeleton-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        </div>
+        <video muted loop playsinline preload="none" data-src="videos/MeshBeacon_GatewayRelay.webm">
+          <source data-src="videos/MeshBeacon_GatewayRelay.webm" type="video/webm">
+          <source data-src="videos/MeshBeacon_GatewayRelay.mp4" type="video/mp4">
+        </video>
+        <div class="video-card-label">
+          <div class="vc-title">Gateway Relay</div>
+          <div class="vc-desc">A relay node picks up the beacon and re-advertises it toward a gateway.</div>
+        </div>
+      </div>
+
+      <div class="video-card">
+        <div class="skeleton-loader">
+          <svg class="skeleton-icon" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+        </div>
+        <video muted loop playsinline preload="none" data-src="videos/MeshBeacon_BatteryBudget.webm">
+          <source data-src="videos/MeshBeacon_BatteryBudget.webm" type="video/webm">
+          <source data-src="videos/MeshBeacon_BatteryBudget.mp4" type="video/mp4">
+        </video>
+        <div class="video-card-label">
+          <div class="vc-title">Battery Budget</div>
+          <div class="vc-desc">The energy ledger tracks every radio operation in real time.</div>
+        </div>
+      </div>
+
+    </div>
   </section>
 
   <section class="section container" id="s04">
@@ -678,6 +891,8 @@
 (function () {
   "use strict";
 
+  /* ---- Packet diagram (unchanged logic) ---- */
+
   var FIELDS = [
     { name: "verType",   bytes: 1, desc: "3-bit protocol version, 3-bit message type" },
     { name: "ttlHops",   bytes: 1, desc: "4-bit hop budget, 4-bit hops travelled" },
@@ -698,7 +913,6 @@
   var diagram = document.getElementById("packetDiagram");
   var list = document.getElementById("packetList");
 
-  // Offset ruler: one tick per byte, 0..23
   for (var i = 0; i < TOTAL_BYTES; i++) {
     var tick = document.createElement("span");
     tick.textContent = i;
@@ -711,7 +925,6 @@
     var end = offset + field.bytes - 1;
     offset += field.bytes;
 
-    // --- horizontal diagram cell ---
     var cell = document.createElement("div");
     cell.className = "byte-field" + (field.bytes <= 1 ? " narrow" : "");
     if (field.hl) cell.classList.add("hl-" + field.hl);
@@ -751,7 +964,6 @@
 
     diagram.appendChild(cell);
 
-    // --- stacked mobile row (always shows description) ---
     var row = document.createElement("div");
     row.className = "field-row";
 
@@ -775,6 +987,66 @@
     row.appendChild(head);
     row.appendChild(descDiv);
     list.appendChild(row);
+  });
+
+  /* ---- Lazy-load videos with skeleton loaders ---- */
+
+  function loadVideo(video) {
+    var src = video.getAttribute("data-src");
+    var skeleton = video.parentElement.querySelector(".skeleton-loader");
+
+    // Set sources on <source> children first, then the video element itself
+    var sources = video.querySelectorAll("source[data-src]");
+    sources.forEach(function (s) {
+      s.src = s.getAttribute("data-src");
+      s.removeAttribute("data-src");
+    });
+
+    if (src) {
+      video.src = src;
+      video.removeAttribute("data-src");
+    }
+
+    video.load();
+
+    // Dismiss skeleton once first frame is available
+    video.addEventListener("loadeddata", function () {
+      if (skeleton) skeleton.classList.add("loaded");
+      video.play().catch(function () { /* autoplay blocked — acceptable */ });
+    }, { once: true });
+
+    // Fallback: dismiss skeleton after 8s even if loadeddata never fires
+    setTimeout(function () {
+      if (skeleton && !skeleton.classList.contains("loaded")) {
+        skeleton.classList.add("loaded");
+      }
+    }, 8000);
+  }
+
+  // Use IntersectionObserver so videos only load when scrolled into view
+  var allVideos = document.querySelectorAll("video[data-src]");
+
+  if ("IntersectionObserver" in window) {
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          loadVideo(entry.target);
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { rootMargin: "200px" });
+
+    allVideos.forEach(function (v) { observer.observe(v); });
+  } else {
+    // Fallback: load everything immediately
+    allVideos.forEach(loadVideo);
+  }
+
+  /* ---- Click-to-play/pause on video cards ---- */
+  document.querySelectorAll(".video-card video").forEach(function (v) {
+    v.parentElement.addEventListener("click", function () {
+      if (v.paused) v.play(); else v.pause();
+    });
   });
 })();
 </script>
