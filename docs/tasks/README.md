@@ -26,8 +26,10 @@ data) and a BLE **scanner** (listens in scheduled windows).
 GATT. That is deliberate: connectionless broadcast costs roughly 1/100th of scanning, which is
 what lets the mesh survive on nearly-dead phones.
 
-Three Compose screens — **SOS**, **Mesh** (responder list), **Mesh Lab** (in-app simulator). The
-service publishes a `StateFlow<NodeSnapshot>`; the screens render it.
+Two user-facing sections — **SOS** (victim) and **Help others** (responder list) — on a bottom
+navigation bar, plus **Mesh Lab** (in-app simulator) and **Raw radio diagnostics** behind a hidden
+long-press entry on the tier badge. The service publishes a `StateFlow<NodeSnapshot>`; the screens
+render it. See B9 for the shell.
 
 Read `../PROTOCOL.md` and `../POWER.md` before B2.
 
@@ -43,6 +45,7 @@ Read `../PROTOCOL.md` and `../POWER.md` before B2.
 | B6 | SOS screen | the victim UI |
 | B7 | Mesh screen | the responder UI |
 | B8 | Mesh Lab | scale demo — **cut this first if short on time** |
+| B9 | two-section UX | SOS + Help others shell, circular SOS button |
 
 ### Gate G3 decides the project
 

@@ -1,9 +1,14 @@
 package com.setu.mesh.app.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,14 +16,19 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,17 +36,22 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.setu.mesh.app.service.SetuService
 import com.setu.mesh.app.ui.components.StatusLadder
 import com.setu.mesh.app.ui.components.TierBadge
+import com.setu.mesh.app.ui.theme.SafeHopShapes
+import com.setu.mesh.app.ui.theme.neumorphic
 import com.setu.mesh.core.engine.NodeSnapshot
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SituationFlags
@@ -45,8 +60,9 @@ import java.util.Locale
 /**
  * The screen a stranded person uses. Design constraint: they are panicking, possibly
  * one-handed, possibly in the dark or in water, phone at 4%. Every normal UI assumption is
- * wrong here, so the SOS button dominates the bottom third of the screen and sends immediately
- * with no form to fill in first -- triage refines afterwards, never blocks sending.
+ * wrong here, so the SOS button is circular, centred, and fixed -- it can never be scrolled out
+ * of view -- and sends immediately with no form to fill in first. Triage refines afterwards,
+ * never blocks sending.
  *
  * State lives here rather than in a ViewModel, for two specific reasons:
  *
@@ -57,9 +73,13 @@ import java.util.Locale
  *    worst possible class of bug, so the mirror is gone.
  *  - **Triage inputs use `rememberSaveable`**, so a rotation does not silently reset someone's
  *    "trapped / water rising" answers back to defaults.
+ *
+ * `onDeveloperEntry` is invoked by a long-press on the tier badge -- see [Header] -- and opens
+ * the hidden Mesh Lab / Diagnostics host. No visual hint that gesture exists: no toast, no badge,
+ * no "hold for dev tools" text.
  */
 @Composable
-fun SosScreen() {
+fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
     val snapshot by SetuService.snapshot.collectAsState()
 
     var severity by rememberSaveable { mutableStateOf(Severity.HIGH) }
@@ -88,101 +108,259 @@ fun SosScreen() {
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(20.dp),
-            ) {
-                snapshot?.let { TierBadge(tier = it.tier, lastGasp = it.lastGasp) }
-                if (snapshot != null) Spacer(Modifier.height(20.dp))
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            // Below this height the stacked layout leaves the fixed region too short for a
+            // usable button (this is the case in landscape on most phones, once the nav bar and
+            // header are accounted for) -- switch to a side-by-side Row instead of shrinking the
+            // circle toward its floor.
+            val isShort = maxHeight < 400.dp
 
-                if (sosActive) {
-                    StatusLadder(
-                        carrying = snapshot?.carrying ?: 0,
-                        maxHops = snapshot?.ownSosMaxHops ?: 0,
-                        delivered = snapshot?.ownSosDelivered ?: false,
-                    )
-                    Spacer(Modifier.height(24.dp))
+            Column(modifier = Modifier.fillMaxSize()) {
+                Header(snapshot = snapshot, onDeveloperEntry = onDeveloperEntry)
+
+                if (isShort) {
+                    Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                        FixedSosRegion(
+                            sosActive = sosActive,
+                            onSend = { SetuService.originateSos(flags(), souls) },
+                            onMarkSafe = { SetuService.markSafe() },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                        ScrollingTriageRegion(
+                            snapshot = snapshot,
+                            sosActive = sosActive,
+                            severity = severity,
+                            souls = souls,
+                            trapped = trapped,
+                            medicalNeed = medicalNeed,
+                            waterRising = waterRising,
+                            onSeverity = { severity = it; resendIfActive() },
+                            onSouls = { souls = it.coerceIn(1, 255); resendIfActive() },
+                            onTrapped = { trapped = !trapped; resendIfActive() },
+                            onMedical = { medicalNeed = !medicalNeed; resendIfActive() },
+                            onWater = { waterRising = !waterRising; resendIfActive() },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
                 } else {
-                    Text(
-                        text = if (snapshot == null) "Starting…" else "Tap SOS below to send your location and situation.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // Fixed region: never part of the scroll below, so the button and the safe
+                    // control are always reachable without scrolling, at any screen size.
+                    FixedSosRegion(
+                        sosActive = sosActive,
+                        onSend = { SetuService.originateSos(flags(), souls) },
+                        onMarkSafe = { SetuService.markSafe() },
+                        modifier = Modifier.fillMaxWidth().weight(1f),
                     )
-                    Spacer(Modifier.height(24.dp))
-                }
-
-                TriageControls(
-                    severity = severity,
-                    souls = souls,
-                    trapped = trapped,
-                    medicalNeed = medicalNeed,
-                    waterRising = waterRising,
-                    onSeverity = { severity = it; resendIfActive() },
-                    onSouls = { souls = it.coerceIn(1, 255); resendIfActive() },
-                    onTrapped = { trapped = !trapped; resendIfActive() },
-                    onMedical = { medicalNeed = !medicalNeed; resendIfActive() },
-                    onWater = { waterRising = !waterRising; resendIfActive() },
-                )
-
-                if (sosActive) {
-                    Spacer(Modifier.height(24.dp))
-                    EnergySummary(snapshot)
+                    ScrollingTriageRegion(
+                        snapshot = snapshot,
+                        sosActive = sosActive,
+                        severity = severity,
+                        souls = souls,
+                        trapped = trapped,
+                        medicalNeed = medicalNeed,
+                        waterRising = waterRising,
+                        onSeverity = { severity = it; resendIfActive() },
+                        onSouls = { souls = it.coerceIn(1, 255); resendIfActive() },
+                        onTrapped = { trapped = !trapped; resendIfActive() },
+                        onMedical = { medicalNeed = !medicalNeed; resendIfActive() },
+                        onWater = { waterRising = !waterRising; resendIfActive() },
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    )
                 }
             }
+        }
+    }
+}
 
+/**
+ * The fixed, never-scrolling region that owns the SOS button (and, once active, the safe
+ * control). Its own `BoxWithConstraints` is the fix for a real bug: sizing the button from the
+ * *whole screen's* constraints let the diameter floor exceed the space this region actually gets
+ * once the header and the scroll region below have taken their share, coercing `size()` into a
+ * non-square box that `clip(CircleShape)` rendered as an oval. Measuring from this composable's
+ * own incoming constraints -- and subtracting what the safe control needs when it's showing --
+ * means the diameter is always sized to the space that is actually available here.
+ */
+@Composable
+private fun FixedSosRegion(
+    sosActive: Boolean,
+    onSend: () -> Unit,
+    onMarkSafe: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(
+        modifier = modifier,
+        contentAlignment = Alignment.Center,
+    ) {
+        val reservedForSafeControl = if (sosActive) SAFE_CONTROL_RESERVED_HEIGHT else 0.dp
+        val availableHeight = (maxHeight - reservedForSafeControl).coerceAtLeast(0.dp)
+        val diameter = (minOf(maxWidth, availableHeight) * SOS_BUTTON_SIZE_FRACTION)
+            .coerceIn(SOS_BUTTON_MIN_DIAMETER, SOS_BUTTON_MAX_DIAMETER)
+
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             SosButton(
                 sent = sosActive,
-                onSend = { SetuService.originateSos(flags(), souls) },
-                onMarkSafe = { SetuService.markSafe() },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.32f),
+                diameter = diameter,
+                onSend = onSend,
             )
+            if (sosActive) {
+                Spacer(Modifier.height(20.dp))
+                MarkSafeButton(onClick = onMarkSafe)
+            }
         }
     }
 }
 
 @Composable
-private fun SosButton(
-    sent: Boolean,
-    onSend: () -> Unit,
-    onMarkSafe: () -> Unit,
+private fun ScrollingTriageRegion(
+    snapshot: NodeSnapshot?,
+    sosActive: Boolean,
+    severity: Severity,
+    souls: Int,
+    trapped: Boolean,
+    medicalNeed: Boolean,
+    waterRising: Boolean,
+    onSeverity: (Severity) -> Unit,
+    onSouls: (Int) -> Unit,
+    onTrapped: () -> Unit,
+    onMedical: () -> Unit,
+    onWater: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+    ) {
+        if (sosActive) {
+            StatusLadder(
+                carrying = snapshot?.carrying ?: 0,
+                maxHops = snapshot?.ownSosMaxHops ?: 0,
+                delivered = snapshot?.ownSosDelivered ?: false,
+            )
+            Spacer(Modifier.height(24.dp))
+        } else {
+            Text(
+                text = if (snapshot == null) "Starting…" else "Tap SOS to send your location and situation.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(24.dp))
+        }
+
+        TriageControls(
+            severity = severity,
+            souls = souls,
+            trapped = trapped,
+            medicalNeed = medicalNeed,
+            waterRising = waterRising,
+            onSeverity = onSeverity,
+            onSouls = onSouls,
+            onTrapped = onTrapped,
+            onMedical = onMedical,
+            onWater = onWater,
+        )
+
+        if (sosActive) {
+            Spacer(Modifier.height(24.dp))
+            EnergySummary(snapshot)
+        }
+    }
+}
+
+/**
+ * Fixed header. The long-press-for-dev-tools gesture lives here, attached with `combinedClickable`
+ * at the call site rather than baked into `TierBadge` itself, so the badge stays a plain
+ * data-display component everywhere else it's used. `indication = null` is deliberate: any
+ * visible press feedback here would itself be the hint this gesture is supposed not to have.
+ */
+@Composable
+private fun Header(snapshot: NodeSnapshot?, onDeveloperEntry: () -> Unit) {
+    if (snapshot == null) return
+    val devInteractionSource = remember { MutableInteractionSource() }
+    TierBadge(
+        tier = snapshot.tier,
+        lastGasp = snapshot.lastGasp,
+        modifier = Modifier
+            .padding(horizontal = 20.dp, vertical = 16.dp)
+            .combinedClickable(
+                interactionSource = devInteractionSource,
+                indication = null,
+                onClick = {},
+                onLongClick = onDeveloperEntry,
+            ),
+    )
+}
+
+/**
+ * The button itself. Flat and saturated on purpose -- this is the one control on the whole
+ * screen that must never carry the neumorphic accent, per `docs/design.md`: a soft shadow reads
+ * as decoration, not as "the thing that sends your SOS."
+ */
+@Composable
+private fun SosButton(
+    sent: Boolean,
+    diameter: Dp,
+    onSend: () -> Unit,
+) {
     val color = if (sent) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.secondary
-    val label = if (sent) "SOS SENT — TAP TO RESEND" else "SOS"
+    val onColor = if (sent) MaterialTheme.colorScheme.onTertiary else MaterialTheme.colorScheme.onSecondary
 
     Box(
-        modifier = modifier
-            .padding(16.dp)
-            .background(color, RoundedCornerShape(24.dp))
+        // requiredSize, not size: size() lets an incoming constraint from a cramped parent
+        // coerce the box into a non-square shape, which clip(CircleShape) then renders as an
+        // oval instead of a circle. requiredSize ignores incoming constraints entirely, so this
+        // box is always exactly diameter x diameter regardless of what its parent offers.
+        modifier = Modifier
+            .requiredSize(diameter)
+            .clip(CircleShape)
+            .background(color)
             .clickable { onSend() }
             .semantics { contentDescription = "Send emergency SOS" },
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSecondary,
-            )
-            if (sent) {
-                Spacer(Modifier.height(12.dp))
+        if (sent) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "I am safe now",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSecondary,
-                    modifier = Modifier
-                        .clickable { onMarkSafe() }
-                        .semantics { contentDescription = "Mark yourself safe, cancelling the SOS" },
+                    text = "SOS SENT",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = onColor,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Tap to resend",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = onColor,
                 )
             }
+        } else {
+            Text(
+                text = "SOS",
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = onColor,
+            )
         }
+    }
+}
+
+/**
+ * Pulled out from inside the SOS button (B9): a nested `clickable` `Text` inside a circular
+ * button was both an accessibility bug and something that was never going to fit inside a
+ * circle. Its own control now, rendered only once an SOS is outstanding.
+ */
+@Composable
+private fun MarkSafeButton(onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier
+            .heightIn(min = 48.dp)
+            .semantics { contentDescription = "Mark yourself safe, cancelling the SOS" },
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.tertiary),
+    ) {
+        Text("I am safe now", style = MaterialTheme.typography.bodyLarge)
     }
 }
 
@@ -199,79 +377,105 @@ private fun TriageControls(
     onMedical: () -> Unit,
     onWater: () -> Unit,
 ) {
-    Text(
-        text = "Situation",
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Spacer(Modifier.height(8.dp))
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Severity.entries.forEach { value ->
-            FilterChip(
-                selected = severity == value,
-                onClick = { onSeverity(value) },
-                label = {
-                    Text(
-                        text = value.name.lowercase(Locale.US).replaceFirstChar { it.uppercase() },
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .semantics { contentDescription = "Severity: ${value.name}" },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                ),
-            )
-        }
-    }
-
-    Spacer(Modifier.height(16.dp))
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    NeumorphicSection {
         Text(
-            text = "People here",
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
+            text = "Situation",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            CounterButton("−", { onSouls(souls - 1) }, "Decrease people count")
-            Text(
-                text = souls.toString(),
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
-            CounterButton("+", { onSouls(souls + 1) }, "Increase people count")
+        Spacer(Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Severity is emergency state, not a secondary surface -- stays flat per
+            // docs/design.md, even though it sits inside a neumorphic section container.
+            Severity.entries.forEach { value ->
+                FilterChip(
+                    selected = severity == value,
+                    onClick = { onSeverity(value) },
+                    label = {
+                        Text(
+                            text = value.name.lowercase(Locale.US).replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { contentDescription = "Severity: ${value.name}" },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ),
+                )
+            }
         }
     }
 
     Spacer(Modifier.height(16.dp))
 
-    Column {
+    NeumorphicSection {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "People here",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CounterButton("−", { onSouls(souls - 1) }, "Decrease people count")
+                Text(
+                    text = souls.toString(),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                CounterButton("+", { onSouls(souls + 1) }, "Increase people count")
+            }
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+
+    NeumorphicSection {
         ToggleRow("Trapped", trapped, onTrapped)
         ToggleRow("Medical need", medicalNeed, onMedical)
         ToggleRow("Water rising", waterRising, onWater)
     }
 }
 
+/**
+ * The one reusable "secondary surface" shape for this screen: neumorphic card container per
+ * `docs/design.md` (14dp radius, two shadow layers). Every triage group lives inside one of
+ * these -- this is the accent dose, not the whole screen.
+ */
+@Composable
+private fun NeumorphicSection(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .neumorphic(cornerRadius = SafeHopShapes.cornerSmall)
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(SafeHopShapes.cornerSmall))
+            .padding(16.dp),
+        content = content,
+    )
+}
+
 @Composable
 private fun CounterButton(symbol: String, onClick: () -> Unit, description: String) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
     Box(
         modifier = Modifier
             .height(56.dp)
             .width(56.dp)
+            .neumorphic(cornerRadius = 12.dp, elevation = 5.dp, pressed = pressed)
             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
@@ -281,11 +485,14 @@ private fun CounterButton(symbol: String, onClick: () -> Unit, description: Stri
 
 @Composable
 private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
-            .clickable(onClick = onToggle)
+            .neumorphic(cornerRadius = 12.dp, elevation = 4.dp, pressed = pressed)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onToggle)
             .semantics { contentDescription = "$label, ${if (checked) "on" else "off"}" },
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -294,6 +501,9 @@ private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
                 .height(28.dp)
                 .width(28.dp)
                 .background(
+                    // The checkbox itself still needs saturated on/off contrast -- neumorphism
+                    // encodes state as shadow, and a checked/unchecked toggle is exactly the
+                    // state a neumorphic surface hides best.
                     if (checked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceVariant,
                     RoundedCornerShape(6.dp),
                 ),
@@ -317,8 +527,19 @@ private fun EnergySummary(snapshot: NodeSnapshot?) {
     val energy = snapshot?.energyMilliampHours ?: return
     if (energy <= 0.0) return
     Text(
-        text = "SETU has used %.2f mAh and carried %d messages so far.".format(energy, snapshot.beaconsRelayed),
+        text = "SafeHop has used %.2f mAh and carried %d messages so far.".format(energy, snapshot.beaconsRelayed),
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
+
+// -- SOS button sizing --------------------------------------------------------------------
+// Fraction of the fixed region's own (width, height-minus-safe-control) that the button
+// occupies, clamped so it neither vanishes on a tiny region nor overwhelms a huge one.
+private const val SOS_BUTTON_SIZE_FRACTION = 0.55f
+private val SOS_BUTTON_MIN_DIAMETER = 120.dp
+private val SOS_BUTTON_MAX_DIAMETER = 260.dp
+
+// Spacer (20dp) + MarkSafeButton (48dp min height) below the circle when sosActive -- held out
+// of the button's own share of the fixed region so the two never compete for the same space.
+private val SAFE_CONTROL_RESERVED_HEIGHT = 68.dp
