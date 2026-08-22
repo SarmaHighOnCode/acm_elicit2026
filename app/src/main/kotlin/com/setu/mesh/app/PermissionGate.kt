@@ -190,7 +190,10 @@ fun PermissionGate(onAllGranted: () -> Unit) {
             if (permissionsGranted && bluetoothEnabled && hasAdapter) {
                 Button(
                     onClick = {
+                        // ACTION_START_MESH, not a bare intent: this is what actually brings up
+                        // the real MeshNode, not just the empty foreground service shell.
                         val serviceIntent = Intent(context, SetuService::class.java)
+                            .setAction(SetuService.ACTION_START_MESH)
                         ContextCompat.startForegroundService(context, serviceIntent)
                         onAllGranted()
                     },

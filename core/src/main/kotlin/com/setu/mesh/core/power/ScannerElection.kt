@@ -44,25 +44,33 @@ object ScannerElection {
         selfCharging: Boolean,
         neighbours: List<NeighbourEnergy>,
         epoch: Long,
+        /**
+         * Width of a battery band in percentage points. Default 10 matches the design in
+         * docs/POWER.md §3. Pass 1 to compare against "no banding" (every distinct battery
+         * percentage is its own band) without a process-global flag -- this is a per-call
+         * parameter, so a `:sim` sweep comparing banding on/off cannot leak state between the
+         * nodes it constructs, unlike a mutable singleton field would.
+         */
+        bandSizePercent: Int = DEFAULT_BAND_SIZE_PERCENT,
     ): Boolean {
         // Alone, or the only one left: there is nobody to delegate listening to.
         if (neighbours.isEmpty()) return true
 
         val ranked = buildList {
-            add(rankOf(selfId, selfBattery, selfCharging, epoch))
-            neighbours.forEach { add(rankOf(it.id, it.batteryPercent, charging = false, epoch = epoch)) }
+            add(rankOf(selfId, selfBattery, selfCharging, epoch, bandSizePercent))
+            neighbours.forEach { add(rankOf(it.id, it.batteryPercent, charging = false, epoch = epoch, bandSizePercent = bandSizePercent)) }
         }.sortedWith(compareByDescending<Rank> { it.band }.thenByDescending { it.tiebreak })
 
         val quota = scannerQuota(ranked.size)
         return ranked.take(quota).any { it.id == selfId }
     }
 
-    private fun rankOf(id: NodeId, battery: Int, charging: Boolean, epoch: Long): Rank = Rank(
+    private fun rankOf(id: NodeId, battery: Int, charging: Boolean, epoch: Long, bandSizePercent: Int): Rank = Rank(
         id = id,
-        // Coarse 10% bands rather than the raw percentage: without banding, the single
+        // Coarse bands rather than the raw percentage: without banding, the single
         // best-charged phone would scan every epoch forever. Banding lets everyone within
-        // 10% of each other take turns via the epoch-mixed tiebreak.
-        band = if (charging) BAND_CHARGING else battery / 10,
+        // the same band take turns via the epoch-mixed tiebreak.
+        band = if (charging) BAND_CHARGING else battery / bandSizePercent,
         tiebreak = rotate(id.raw, epoch),
     )
 
@@ -79,4 +87,6 @@ object ScannerElection {
 
     /** Above any real battery band, so charging devices always outrank battery-powered ones. */
     private const val BAND_CHARGING = 100
+
+    const val DEFAULT_BAND_SIZE_PERCENT = 10
 }

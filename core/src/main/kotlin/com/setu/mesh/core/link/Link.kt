@@ -51,8 +51,47 @@ interface Link {
      */
     suspend fun sendBundle(peer: PeerHandle, payload: ByteArray): Boolean
 
+    /**
+     * Hint that the engine's power tier changed, so a transport with real radio controls can
+     * retune. Called only when the profile actually changes, not every loop.
+     *
+     * Default is a no-op: a transport with no tunable radio (the simulator, which models energy
+     * through the ledger instead) correctly ignores this, which is why it has a default body
+     * rather than being a required member.
+     *
+     * Note this deliberately takes [RadioProfile] and not `PowerTier`. The rule that this
+     * interface never traffics in protocol types still holds: a profile is a statement about
+     * radio intent ("go fast", "go quiet, but be heard"), which is a transport concern. The
+     * engine does the tier-to-profile translation on its side.
+     */
+    suspend fun applyRadioProfile(profile: RadioProfile) {}
+
     /** Release radios. Called on last-gasp shutdown. */
     suspend fun shutdown()
+}
+
+/**
+ * How hard the transport should drive the radio. Deliberately phrased as radio intent rather
+ * than mirroring `PowerTier`, so the protocol's tier ladder can change without dragging this
+ * interface along with it.
+ */
+enum class RadioProfile {
+    /** Discover as fast as possible; this node can afford it. */
+    HIGH_PERFORMANCE,
+
+    /** Balanced duty cycle -- the ordinary case. */
+    BALANCED,
+
+    /** Minimise power. Longer intervals, cheaper scan modes. */
+    LOW_POWER,
+
+    /**
+     * Minimise power *but* maximise reach. A node broadcasting rarely should make each
+     * broadcast carry as far as it can, so this trades transmit power for interval -- the
+     * opposite trade from [LOW_POWER], and the right one for a nearly-dead phone that has
+     * stopped listening and is only trying to stay findable.
+     */
+    LOW_POWER_LONG_RANGE,
 }
 
 /** Opaque peer address. On Android this wraps a BLE MAC; in the simulator, a node index. */

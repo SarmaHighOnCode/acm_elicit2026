@@ -16,6 +16,13 @@ data class RadioPlan(
     val mayOpenConnections: Boolean,
     /** True while the node is spending its final reserve to hand off everything it holds. */
     val lastGasp: Boolean,
+    /**
+     * True only inside this epoch's rendezvous window (see [RendezvousScheduler.isInWindow]).
+     * [scanThisEpoch] answers "does this tier participate this epoch"; this answers "is it the
+     * right second within that epoch". Scanning while this is false burns battery listening
+     * through a window no phase-aligned peer is transmitting into.
+     */
+    val inRendezvousWindow: Boolean = false,
 ) {
     val advertising: Boolean get() = beaconIntervalMillis > 0
 }
@@ -38,6 +45,7 @@ data class RadioPlan(
 class PowerGovernor(
     private val scheduler: RendezvousScheduler = RendezvousScheduler(),
     val ledger: EnergyLedger = EnergyLedger(),
+    private val tuning: ProtocolTuning = ProtocolTuning.DEFAULT,
 ) {
 
     fun plan(
@@ -60,6 +68,7 @@ class PowerGovernor(
                 scanWindowMillis = 0L,
                 mayOpenConnections = false,
                 lastGasp = true,
+                inRendezvousWindow = false,
             )
         }
 
@@ -67,7 +76,7 @@ class PowerGovernor(
 
         val scans = tier.scans &&
             scheduler.scansInEpoch(epoch, tier) &&
-            ScannerElection.shouldScan(selfId, batteryPercent, charging, neighbours, epoch)
+            ScannerElection.shouldScan(selfId, batteryPercent, charging, neighbours, epoch, tuning.scannerBandSizePercent)
 
         return RadioPlan(
             tier = tier,
@@ -76,6 +85,7 @@ class PowerGovernor(
             scanWindowMillis = if (scans) tier.scanWindowMillis else 0L,
             mayOpenConnections = tier.mayOpenConnections,
             lastGasp = false,
+            inRendezvousWindow = scheduler.isInWindow(nowMillis),
         )
     }
 

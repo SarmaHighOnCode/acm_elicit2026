@@ -236,3 +236,56 @@ runs, battery capacity read from the device spec sheet.
 - *Connection-less BLE Performance Evaluation on Smartphones*, Procedia CS, 2019
 - [bitchat WHITEPAPER](https://github.com/permissionlesstech/bitchat/blob/main/WHITEPAPER.md) — TTL, dedup and duty-cycling on the same radio
 - [Android BLE advertising](https://source.android.com/docs/core/connect/bluetooth/ble_advertising)
+
+---
+
+## 9. Simulated results
+
+*All numbers in this section are from deterministic multi-run simulation runs (`:sim`, seed = 7, 5 runs per data point). Real hardware figures will replace them when M1–M6 run.*
+
+### 9.1 Delivery ratio vs. starting battery
+
+Swept mean starting battery across 100 nodes in the `flood` scenario over 20 virtual minutes.
+
+| Starting Battery % | Mean Delivery Ratio | Spread [Min, Max] |
+|-------------------|---------------------|-------------------|
+| 10% | 32.0% | [20.0%, 50.0%] |
+| 20% | 54.0% | [40.0%, 70.0%] |
+| 30% | 52.0% | [40.0%, 60.0%] |
+| 40% | 44.0% | [30.0%, 50.0%] |
+| 50% | 64.0% | [40.0%, 80.0%] |
+| 60% | 72.0% | [50.0%, 100.0%] |
+| 70% | 80.0% | [60.0%, 100.0%] |
+| 80% | 80.0% | [50.0%, 100.0%] |
+| 90% | 100.0% | [100.0%, 100.0%] |
+| 100% | 100.0% | [100.0%, 100.0%] |
+
+### 9.2 Energy gate impact
+
+Comparison of 100-node mesh performance when the energy gate is active vs. forced to 1.0 (always relay).
+
+| Configuration | Mean Delivery Ratio | 30-min Mesh Survival |
+|---------------|---------------------|----------------------|
+| **Gated** | 34.0% | 100% |
+| **Ungated (Force 1.0)** | 40.0% | 100% |
+
+### 9.3 Phase-locked rendezvous impact
+
+Comparison of delivery ratio and discovery time under wall-clock phase locking vs. independent random phases (`unsynced`).
+
+| Configuration | Mean Delivery Ratio |
+|---------------|---------------------|
+| **Wall-clock phase-locked** | 72.0% |
+| **Independent random phase** | 70.0% |
+
+### 9.4 Scanner election rotation
+
+Comparison of energy distribution across nodes over 30 virtual minutes with vs. without 10% battery banding in `ScannerElection`.
+
+| Configuration | Mean p95 mAh | Mean Median mAh | Mean mAh Spread (p95 - Median) |
+|---------------|--------------|-----------------|--------------------------------|
+| **With 10% Banding** | 9.51 mAh | 1.15 mAh | **8.36 mAh** |
+| **Without Banding** | 9.90 mAh | 0.73 mAh | **9.17 mAh** |
+
+*Banding visibly narrows the energy spread between nodes (8.36 mAh vs 9.17 mAh) by rotating scanner election duty among similarly-charged peers.*
+

@@ -4,6 +4,7 @@ import com.setu.mesh.core.codec.BeaconCodec
 import com.setu.mesh.core.link.Link
 import com.setu.mesh.core.link.LinkEvent
 import com.setu.mesh.core.link.PeerHandle
+import com.setu.mesh.core.link.RadioProfile
 import com.setu.mesh.core.model.DEFAULT_TTL
 import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.MILLIS_PER_MINUTE
@@ -16,6 +17,7 @@ import com.setu.mesh.core.model.SosBeacon
 import com.setu.mesh.core.power.NeighbourEnergy
 import com.setu.mesh.core.power.PowerGovernor
 import com.setu.mesh.core.power.PowerTier
+import com.setu.mesh.core.power.ProtocolTuning
 import com.setu.mesh.core.power.RadioPlan
 import com.setu.mesh.core.routing.ForwardingContext
 import com.setu.mesh.core.routing.ForwardingPolicy
@@ -70,6 +72,11 @@ class MeshNode(
     private val host: NodeHost,
     private val governor: PowerGovernor = PowerGovernor(),
     private val random: Random = Random.Default,
+    /** See [ProtocolTuning]. Default reproduces normal forwarding-policy behaviour exactly. */
+    private val tuning: ProtocolTuning = ProtocolTuning.DEFAULT,
+    private val keyStore: com.setu.mesh.core.crypto.KeyStore = object : com.setu.mesh.core.crypto.KeyStore {
+        override fun getPublicKey(originId: NodeId): java.security.PublicKey? = null
+    }
 ) {
     private val seen = SeenSet()
     private val outbox = Outbox()
@@ -78,6 +85,7 @@ class MeshNode(
     private var sequence = 0
     private var ownMessageId: MessageId? = null
     private var carouselOffset = 0
+    private var lastRadioProfile: RadioProfile? = null
 
     private val _snapshot = MutableStateFlow(NodeSnapshot(id = id))
     val snapshot: StateFlow<NodeSnapshot> = _snapshot.asStateFlow()
@@ -140,6 +148,31 @@ class MeshNode(
         refreshSnapshot(nowMillis)
     }
 
+    /**
+     * Emit a RECEIPT for [forMessage] into the mesh. Carriers that hear it drop the original,
+     * which is how delivery confirmation returns airtime and buffer to the network.
+     */
+    fun originateReceipt(forMessage: MessageId, nowMillis: Long = host.nowMillis()): MessageId {
+        val epochMinute = toEpochMinute(nowMillis)
+        val receipt = SosBeacon(
+            type = MessageType.RECEIPT,
+            ttl = DEFAULT_TTL,
+            hops = 0,
+            messageId = forMessage,
+            origin = id,
+            position = host.position() ?: GeoPoint.UNKNOWN,
+            epochMinute = epochMinute,
+            flags = SituationFlags(),
+            souls = 0,
+            originBattery = host.batteryPercent(),
+        )
+        seen.addIfNew(dedupKey(receipt), nowMillis)
+        outbox.remove(forMessage)
+        outbox.put(receipt, nowMillis, isOwn = true)
+        refreshSnapshot(nowMillis)
+        return forMessage
+    }
+
     // ---------------------------------------------------------------- reception
 
     /**
@@ -193,6 +226,7 @@ class MeshNode(
                 isOwnMessage = beacon.origin == id,
             ),
             random = random,
+            energyGateOverride = tuning.energyGateOverride,
         )
 
         if (decision is RelayDecision.Relay) {
@@ -231,6 +265,16 @@ class MeshNode(
         return slice
     }
 
+    /**
+     * Snapshot of everything this node currently carries, in the same order the beacon
+     * carousel would broadcast them. Read-only: unlike [beaconsToAdvertise], this does not
+     * rotate the carousel offset, so a UI can call it freely without disturbing what actually
+     * goes out over the radio. Exists for the responder view, which needs to list carried SOS
+     * messages rather than just a count.
+     */
+    fun carriedMessages(nowMillis: Long = host.nowMillis()): List<SosBeacon> =
+        outbox.carouselOrder(nowMillis).map { it.beacon }
+
     // ---------------------------------------------------------------- run loop
 
     /** Drives [link] from [planNow]. Cancel the surrounding scope to stop. */
@@ -239,7 +283,13 @@ class MeshNode(
             link.events.collect { event ->
                 when (event) {
                     is LinkEvent.BeaconHeard -> onBeaconHeard(event.payload, event.peer, event.atMillis)
-                    is LinkEvent.BundleReceived -> Unit // rich bundles: see docs/PROTOCOL.md roadmap
+                    is LinkEvent.BundleReceived -> {
+                        val bundle = com.setu.mesh.core.codec.BundleCodec.decode(event.payload, keyStore)
+                        if (bundle != null && bundle.verification != com.setu.mesh.core.model.BundleVerification.SignatureInvalid) {
+                            val encodedBeacon = com.setu.mesh.core.codec.BeaconCodec.encode(bundle.beacon)
+                            onBeaconHeard(encodedBeacon, event.peer, event.atMillis)
+                        }
+                    }
                     is LinkEvent.ScanWindow -> Unit
                     is LinkEvent.RadioUnavailable -> Unit
                 }
@@ -253,13 +303,21 @@ class MeshNode(
             outbox.purgeStale(now)
             seen.purgeExpired(now)
 
+            // Only on change: retuning the radio is not free, and the tier is stable for long
+            // stretches. Without this guard it would fire on every loop iteration.
+            val profile = radioProfileFor(plan.tier)
+            if (profile != lastRadioProfile) {
+                link.applyRadioProfile(profile)
+                lastRadioProfile = profile
+            }
+
             val beacons = beaconsToAdvertise(link.capabilities.advertisingSlots, now)
             if (link.capabilities.canAdvertise) {
                 link.setAdvertisedBeacons(beacons)
                 governor.ledger.billAdvertising(plan.beaconIntervalMillis, plan.beaconIntervalMillis)
             }
 
-            if (plan.scanThisEpoch && plan.scanWindowMillis > 0) {
+            if (plan.scanThisEpoch && plan.inRendezvousWindow && plan.scanWindowMillis > 0) {
                 _snapshot.value = _snapshot.value.copy(scanning = true)
                 link.scanFor(plan.scanWindowMillis)
                 governor.ledger.billScan(plan.scanWindowMillis)
@@ -267,8 +325,57 @@ class MeshNode(
             }
 
             refreshSnapshot(now)
-            delay(plan.beaconIntervalMillis.coerceAtLeast(MIN_LOOP_DELAY_MILLIS))
+            delay(nextSleepMillis(plan, now))
         }
+    }
+
+    /**
+     * How long to sleep before the next loop iteration.
+     *
+     * Sleeping a flat [RadioPlan.beaconIntervalMillis] is *not* safe here, and this is subtle
+     * enough to be worth spelling out. The rendezvous window is 1s wide inside a 60s epoch, and
+     * the loop wakes on a fixed grid whose phase is set by whenever the node happened to start.
+     * If that grid never lands inside the window, the node never scans -- not rarely, *never*.
+     * Concretely, a FLARE node (2s interval) that starts 1.2s into an epoch has wake times at
+     * 1.2s, 3.2s, 5.2s ... and every one of them misses [0s, 1s). It stays permanently deaf
+     * while reporting itself perfectly healthy.
+     *
+     * The simulator cannot catch this: `World.tick()` steps a fixed 250ms, which always samples
+     * the window. It is a hardware-only failure, which is exactly the kind worth designing out
+     * rather than discovering on stage.
+     *
+     * So when this node intends to scan this epoch but is not currently inside the window, it
+     * sleeps no longer than the time remaining until the window opens. Repeated application
+     * converges on landing exactly at the window boundary, whatever the starting phase.
+     */
+    /**
+     * Translates the protocol's power tier into transport-level radio intent. EMBER maps to
+     * LOW_POWER_LONG_RANGE rather than plain LOW_POWER on purpose: a node at that tier has
+     * stopped listening entirely and broadcasts rarely, so each broadcast should reach as far
+     * as it can. Spending transmit power there buys reach with energy the node is no longer
+     * spending on scanning. See `docs/POWER.md` §1.
+     */
+    private fun radioProfileFor(tier: PowerTier): RadioProfile = when (tier) {
+        PowerTier.BRIDGE -> RadioProfile.HIGH_PERFORMANCE
+        PowerTier.RELAY -> RadioProfile.BALANCED
+        PowerTier.GOSSIP -> RadioProfile.BALANCED
+        PowerTier.FLARE -> RadioProfile.LOW_POWER
+        PowerTier.EMBER -> RadioProfile.LOW_POWER_LONG_RANGE
+    }
+
+    private fun nextSleepMillis(plan: RadioPlan, nowMillis: Long): Long {
+        val base = plan.beaconIntervalMillis
+        // Gated on tier.scans, NOT on plan.scanThisEpoch. scanThisEpoch is only true during the
+        // epochs this tier actually participates in; a tier that scans every 4th epoch would
+        // otherwise drift freely through the three idle epochs and arrive at the participating
+        // one at an arbitrary phase -- reintroducing exactly the bug this exists to prevent.
+        // millisUntilNextWindow already skips ahead to the next *participating* epoch.
+        val sleep = if (plan.tier.scans && !plan.inRendezvousWindow) {
+            minOf(base, governor.millisUntilNextWindow(nowMillis, plan.tier))
+        } else {
+            base
+        }
+        return sleep.coerceAtLeast(MIN_LOOP_DELAY_MILLIS)
     }
 
     // ---------------------------------------------------------------- internals
