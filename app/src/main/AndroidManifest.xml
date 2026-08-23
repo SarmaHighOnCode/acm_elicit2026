@@ -23,6 +23,9 @@
     <!-- Android 13+ requires this to post the foreground notification -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Only requested/used when a node enables Gateway Mode (see GatewaySettings) -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+
     <!-- Hard requirement: BLE is the only transport -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 

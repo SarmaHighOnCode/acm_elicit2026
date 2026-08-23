@@ -1,6 +1,10 @@
 package com.setu.mesh.app.ui.dev
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -10,14 +14,24 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.Alignment
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.setu.mesh.app.data.GatewaySettings
 import com.setu.mesh.app.service.SetuService
 
 /**
@@ -55,6 +69,8 @@ fun DiagnosticsScreen() {
             Spacer(Modifier.height(24.dp))
 
             MeshControls()
+            Spacer(Modifier.height(24.dp))
+            GatewaySmsControls()
             Spacer(Modifier.height(24.dp))
             AdvertiserTestControls()
             Spacer(Modifier.height(24.dp))
@@ -114,6 +130,85 @@ private fun MeshControls() {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Text("Stop mesh", color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+/**
+ * Gateway SMS fallback. Read by [SetuService.startMesh] at mesh start, so toggling this after
+ * the mesh is already running has no effect until "Stop mesh" / "Start mesh" is pressed again --
+ * that's a deliberate simplicity trade for a same-day feature, not a real settings screen.
+ *
+ * This device becomes the one node that texts an authority number the moment it is the first to
+ * accept delivery of any SOS. Everywhere else in the mesh, "delivered" only ever meant a
+ * neighbouring phone's screen; this is the one path that reaches outside it.
+ */
+@Composable
+private fun GatewaySmsControls() {
+    val context = LocalContext.current
+    var enabled by remember { mutableStateOf(GatewaySettings.isEnabled(context)) }
+    var number by remember { mutableStateOf(GatewaySettings.getPhoneNumber(context)) }
+    var hasSmsPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> hasSmsPermission = granted }
+
+    Text(
+        text = "Gateway SMS fallback",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+    Text(
+        text = "When this node is the first to accept an SOS, text an authority number. " +
+            "Requires SEND_SMS and a (re)start of the mesh to take effect.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Enable gateway mode", color = MaterialTheme.colorScheme.onSurface)
+        Switch(
+            checked = enabled,
+            onCheckedChange = {
+                enabled = it
+                GatewaySettings.setEnabled(context, it)
+                if (it && !hasSmsPermission) {
+                    permissionLauncher.launch(Manifest.permission.SEND_SMS)
+                }
+            },
+        )
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    OutlinedTextField(
+        value = number,
+        onValueChange = {
+            number = it
+            GatewaySettings.setPhoneNumber(context, it)
+        },
+        label = { Text("Authority phone number") },
+        modifier = Modifier.fillMaxWidth(),
+    )
+
+    if (!hasSmsPermission) {
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "SEND_SMS not granted -- alerts will be silently skipped.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
     }
 }
 

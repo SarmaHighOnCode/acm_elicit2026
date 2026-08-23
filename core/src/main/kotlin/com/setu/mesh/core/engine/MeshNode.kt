@@ -92,6 +92,22 @@ class MeshNode(
 
     val ledger get() = governor.ledger
 
+    /**
+     * Set only on a node acting as a gateway (uplink to the outside world). Not a constructor
+     * param: [GatewayRole] holds a reference back to this node to originate the RECEIPT, so it
+     * has to be built after the node exists. Null on every ordinary relay-only node.
+     */
+    var gatewayRole: GatewayRole? = null
+
+    /**
+     * Fires once per distinct SOS this node accepts delivery for as a gateway -- i.e. only when
+     * [gatewayRole] is set, has an uplink, and has not already accepted this message. Carries the
+     * full beacon (position, severity, souls) so the transport layer can hand it to whatever the
+     * real uplink is (SMS, an API call, a dispatcher radio) without `core` knowing any of that
+     * exists.
+     */
+    var onGatewayAlert: ((SosBeacon) -> Unit)? = null
+
     // ---------------------------------------------------------------- origination
 
     /**
@@ -212,6 +228,19 @@ class MeshNode(
 
         if (!seen.addIfNew(dedupKey(beacon), nowMillis)) {
             return RelayDecision.Suppress(com.setu.mesh.core.routing.SuppressReason.PROBABILISTIC)
+        }
+
+        // Gated on the dedup check above, not on beacon.type alone: without that, every
+        // re-hear of an already-seen SOS (this node relays it, a neighbour relays it back) would
+        // fire another alert. Placing this after seen.addIfNew() means it fires exactly once per
+        // distinct SOS this node ever accepts as a gateway, which is what "send one SMS per
+        // emergency" requires.
+        if (beacon.type == MessageType.SOS) {
+            gatewayRole?.let { role ->
+                if (role.acceptDelivery(beacon.messageId, nowMillis) != null) {
+                    onGatewayAlert?.invoke(beacon)
+                }
+            }
         }
 
         val relayed = beacon.relayed()

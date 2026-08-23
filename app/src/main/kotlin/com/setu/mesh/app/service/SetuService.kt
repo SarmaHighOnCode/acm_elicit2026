@@ -1,26 +1,33 @@
 package com.setu.mesh.app.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.ScanSettings
+import android.telephony.SmsManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import com.setu.mesh.app.R
 import com.setu.mesh.app.ble.AndroidLink
 import com.setu.mesh.app.ble.BEACON_SIZE_BYTES
 import com.setu.mesh.app.ble.BleAdvertiser
 import com.setu.mesh.app.ble.BleScanner
+import com.setu.mesh.app.data.GatewaySettings
 import com.setu.mesh.app.data.NodeIdentity
+import com.setu.mesh.core.engine.GatewayRole
 import com.setu.mesh.core.engine.MeshNode
 import com.setu.mesh.core.engine.NodeSnapshot
 import com.setu.mesh.core.model.MessageId
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SituationFlags
+import com.setu.mesh.core.model.SosBeacon
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -167,6 +174,17 @@ class SetuService : LifecycleService() {
         val link = AndroidLink(this, scope)
         val node = MeshNode(nodeId, link, host)
 
+        if (GatewaySettings.isEnabled(this)) {
+            val number = GatewaySettings.getPhoneNumber(this)
+            if (number.isBlank()) {
+                Log.w(TAG_MESH, "Gateway mode enabled but no phone number set -- not attaching")
+            } else {
+                node.gatewayRole = GatewayRole(node).apply { onUplinkAvailable(true) }
+                node.onGatewayAlert = { beacon -> sendGatewaySms(number, beacon) }
+                Log.i(TAG_MESH, "Gateway mode active -> $number")
+            }
+        }
+
         androidNodeHost = host
         androidLink = link
         meshNode = node
@@ -234,6 +252,55 @@ class SetuService : LifecycleService() {
         }
         val messageId = node.originateSos(SituationFlags(severity = Severity.HIGH), souls = 1)
         Log.i(TAG_MESH, "Originated test SOS $messageId")
+    }
+
+    /**
+     * The SMS fallback: fires once per distinct SOS this node accepts delivery for as a
+     * gateway (see [MeshNode.onGatewayAlert]). This is the only place in the app that reaches
+     * an actual outside-world channel -- everything upstream of this (the mesh, the receipt,
+     * "delivered" as a concept) is otherwise just a message sitting on a phone screen.
+     *
+     * Deliberately not queued or retried: `sendTextMessage` hands off to the carrier
+     * immediately and android reports failure via [android.telephony.SmsManager] result
+     * intents, which this fire-and-forget path does not wire up. Acceptable for a hackathon
+     * gateway node that is, by definition, the one phone with signal in the room.
+     */
+    private fun sendGatewaySms(number: String, beacon: SosBeacon) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG_MESH, "Gateway alert suppressed: SEND_SMS not granted")
+            return
+        }
+        val body = buildString {
+            append("SafeHop SOS: ")
+            append(beacon.flags.severity)
+            append(", ")
+            append(beacon.souls)
+            append(if (beacon.souls == 1) " person" else " people")
+            append(", ")
+            append(beacon.hops)
+            append(" hop(s) from origin ")
+            append(beacon.origin.short())
+            if (beacon.position != com.setu.mesh.core.model.GeoPoint.UNKNOWN) {
+                append(" @ ")
+                append(beacon.position.latitude)
+                append(",")
+                append(beacon.position.longitude)
+            }
+        }
+        try {
+            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                getSystemService(SmsManager::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                SmsManager.getDefault()
+            }
+            smsManager.sendTextMessage(number, null, body, null, null)
+            Log.i(TAG_MESH, "Gateway SMS sent to $number for ${beacon.messageId.short()}")
+        } catch (e: Exception) {
+            Log.e(TAG_MESH, "Gateway SMS failed for ${beacon.messageId.short()}", e)
+        }
     }
 
     override fun onDestroy() {
