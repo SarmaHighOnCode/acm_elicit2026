@@ -2,6 +2,7 @@ package com.setu.mesh.core.routing
 
 import com.setu.mesh.core.codec.BeaconCodec
 import com.setu.mesh.core.model.MessageId
+import com.setu.mesh.core.model.MessageType
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SosBeacon
 
@@ -37,37 +38,48 @@ class OutboxEntry(
  */
 class Outbox(private val capacity: Int = DEFAULT_CAPACITY) {
 
-    private val entries = LinkedHashMap<Int, OutboxEntry>()
+    // Keyed on (messageId, type), not messageId alone. A RECEIPT/SAFE deliberately carries the
+    // *original* SOS's messageId (see MeshNode.markSafe / originateReceipt) so it can point back
+    // at what it confirms -- but that means messageId alone can no longer identify one carried
+    // beacon, since the SOS and its own RECEIPT collide on it. Folding the type into the key
+    // lets both coexist, which is required for the RECEIPT to survive its own echo: without this
+    // a node carrying a RECEIPT would delete its own copy the moment a neighbour echoed the same
+    // RECEIPT back, because "remove the SOS this refers to" and "remove the RECEIPT itself" were
+    // indistinguishable operations on the same key.
+    private val entries = LinkedHashMap<Long, OutboxEntry>()
 
     val size: Int get() = entries.size
 
-    fun contains(id: MessageId): Boolean = entries.containsKey(id.raw)
+    fun contains(id: MessageId, type: MessageType): Boolean = entries.containsKey(key(id, type))
 
-    fun get(id: MessageId): OutboxEntry? = entries[id.raw]
+    fun get(id: MessageId, type: MessageType): OutboxEntry? = entries[key(id, type)]
 
     fun all(): List<OutboxEntry> = entries.values.toList()
 
     fun put(beacon: SosBeacon, nowMillis: Long, isOwn: Boolean): OutboxEntry {
-        val existing = entries[beacon.messageId.raw]
+        val k = key(beacon.messageId, beacon.type)
+        val existing = entries[k]
         if (existing != null) return existing
 
         val entry = OutboxEntry(beacon, nowMillis, isOwn)
-        entries[beacon.messageId.raw] = entry
+        entries[k] = entry
         if (entries.size > capacity) evictOne()
         return entry
     }
 
     /**
-     * Stop carrying a message. Called when a RECEIPT proves it was delivered, when custody is
-     * transferred to a healthier node, or when the sender marks themselves safe.
+     * Stop carrying the beacon identified by ([id], [type]). Called when a RECEIPT proves the
+     * matching SOS was delivered, when custody is transferred to a healthier node, or when the
+     * sender marks themselves safe -- always naming the SOS entry explicitly so a RECEIPT/SAFE
+     * beacon that merely *references* that id can never be mistaken for the entry it targets.
      *
      * Every call to this frees radio time, which is why delivery confirmation is treated as an
      * energy optimisation rather than a nicety.
      */
-    fun remove(id: MessageId): Boolean = entries.remove(id.raw) != null
+    fun remove(id: MessageId, type: MessageType): Boolean = entries.remove(key(id, type)) != null
 
-    fun noteCarrier(id: MessageId, carrierNodeIdRaw: Int) {
-        entries[id.raw]?.noteCarrier(carrierNodeIdRaw)
+    fun noteCarrier(id: MessageId, type: MessageType, carrierNodeIdRaw: Int) {
+        entries[key(id, type)]?.noteCarrier(carrierNodeIdRaw)
     }
 
     /**
@@ -103,7 +115,7 @@ class Outbox(private val capacity: Int = DEFAULT_CAPACITY) {
                     .thenByDescending { it.neighboursHoldingCopy }
                     .thenBy { it.addedAtMillis },
             ) ?: return
-        entries.remove(victim.beacon.messageId.raw)
+        entries.remove(key(victim.beacon.messageId, victim.beacon.type))
     }
 
     companion object {
@@ -112,5 +124,14 @@ class Outbox(private val capacity: Int = DEFAULT_CAPACITY) {
 
         /** Convenience for tests and the simulator. */
         fun severityOf(entry: OutboxEntry): Severity = entry.beacon.flags.severity
+
+        /**
+         * Pack (messageId, type) into one Long key. [MessageId.raw] is a full 32-bit Int --
+         * sign-extending it into the low 32 bits of the Long and shifting left by 3 never loses
+         * information, and OR-ing in [MessageType.wire] (3 bits, 0-7) into the freed low bits
+         * recovers a unique key per (id, type) pair with no collisions between distinct ids.
+         */
+        private fun key(id: MessageId, type: MessageType): Long =
+            (id.raw.toLong() shl 3) or type.wire.toLong()
     }
 }

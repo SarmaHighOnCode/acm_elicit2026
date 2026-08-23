@@ -47,7 +47,7 @@ class OutboxTest {
         outbox.put(b4, 1300L, isOwn = false)
 
         // Eviction should drop the lowest severity non-own message (b1 - LOW)
-        assertNull(outbox.get(MessageId(1)))
+        assertNull(outbox.get(MessageId(1), MessageType.SOS))
         assertEquals(3, outbox.size)
 
         order = outbox.carouselOrder(1400L)
@@ -58,12 +58,12 @@ class OutboxTest {
         
         // Let's test fewest carriers tiebreaker. b4 and b5 both HIGH.
         val b5 = testBeacon(5, Severity.HIGH)
-        outbox.remove(MessageId(2)) // make room
+        outbox.remove(MessageId(2), MessageType.SOS) // make room
         outbox.put(b5, 1500L, isOwn = false)
-        
-        // Now outbox has b3(own), b4(HIGH), b5(HIGH). 
+
+        // Now outbox has b3(own), b4(HIGH), b5(HIGH).
         // We add carrier for b4 so b5 has fewer.
-        outbox.noteCarrier(MessageId(4), 99)
+        outbox.noteCarrier(MessageId(4), MessageType.SOS, 99)
         
         order = outbox.carouselOrder(1600L)
         // b3 (own) -> b5 (HIGH, 0 carriers) -> b4 (HIGH, 1 carrier)
@@ -76,10 +76,10 @@ class OutboxTest {
     fun `remove on RECEIPT`() {
         val outbox = Outbox()
         outbox.put(testBeacon(1, Severity.LOW), 1000L, isOwn = false)
-        assertTrue(outbox.contains(MessageId(1)))
-        
-        assertTrue(outbox.remove(MessageId(1)))
-        assertFalse(outbox.contains(MessageId(1)))
+        assertTrue(outbox.contains(MessageId(1), MessageType.SOS))
+
+        assertTrue(outbox.remove(MessageId(1), MessageType.SOS))
+        assertFalse(outbox.contains(MessageId(1), MessageType.SOS))
     }
 
     @Test
@@ -87,11 +87,44 @@ class OutboxTest {
         val outbox = Outbox()
         outbox.put(testBeacon(1, Severity.LOW), 1000L, isOwn = false)
         outbox.put(testBeacon(2, Severity.LOW), 1000L, isOwn = true)
-        
+
         val maxAge = Outbox.DEFAULT_MAX_AGE_MILLIS
         outbox.purgeStale(1000L + maxAge + 1)
-        
-        assertFalse(outbox.contains(MessageId(1))) // purged
-        assertTrue(outbox.contains(MessageId(2))) // spared because it's own
+
+        assertFalse(outbox.contains(MessageId(1), MessageType.SOS)) // purged
+        assertTrue(outbox.contains(MessageId(2), MessageType.SOS)) // spared because it's own
+    }
+
+    @Test
+    fun `RECEIPT and its SOS coexist under the type-keyed outbox`() {
+        // The bug this exists to prevent: a RECEIPT carries the *original SOS's* messageId, so
+        // before the outbox keyed on (id, type) the two collided on the same slot and a node
+        // carrying a RECEIPT would delete its own copy on hearing that RECEIPT echo back.
+        val outbox = Outbox()
+        val sos = testBeacon(1, Severity.CRITICAL)
+        outbox.put(sos, 1000L, isOwn = false)
+
+        val receipt = SosBeacon(
+            type = MessageType.RECEIPT,
+            ttl = 7,
+            hops = 0,
+            messageId = MessageId(1),
+            origin = NodeId(2),
+            position = GeoPoint.of(0.0, 0.0),
+            epochMinute = 0,
+            flags = SituationFlags(),
+            souls = 0,
+            originBattery = 100,
+        )
+        outbox.put(receipt, 1100L, isOwn = true)
+
+        // Both present under the same messageId, distinguished by type.
+        assertTrue(outbox.contains(MessageId(1), MessageType.SOS))
+        assertTrue(outbox.contains(MessageId(1), MessageType.RECEIPT))
+
+        // Clearing the SOS (what a RECEIPT/SAFE arrival does) must not touch the RECEIPT entry.
+        outbox.remove(MessageId(1), MessageType.SOS)
+        assertFalse(outbox.contains(MessageId(1), MessageType.SOS))
+        assertTrue(outbox.contains(MessageId(1), MessageType.RECEIPT))
     }
 }

@@ -172,7 +172,7 @@ class MeshNode(
         // in the outbox. Own entries are exempt from both Outbox.purgeStale and
         // Outbox.evictOne, so nothing ever reclaims them: the carried count only climbs, and
         // past capacity the outbox grows without bound.
-        ownMessageId?.let { outbox.remove(it) }
+        ownMessageId?.let { outbox.remove(it, MessageType.SOS) }
 
         ownMessageId = messageId
         seen.addIfNew(dedupKey(beacon), nowMillis)
@@ -203,7 +203,7 @@ class MeshNode(
             souls = 0,
             originBattery = host.batteryPercent(),
         )
-        outbox.remove(original)
+        outbox.remove(original, MessageType.SOS)
         ownMessageId = null
         seen.addIfNew(dedupKey(safe), nowMillis)
         outbox.put(safe, nowMillis, isOwn = true)
@@ -229,7 +229,7 @@ class MeshNode(
             originBattery = host.batteryPercent(),
         )
         seen.addIfNew(dedupKey(receipt), nowMillis)
-        outbox.remove(forMessage)
+        outbox.remove(forMessage, MessageType.SOS)
         outbox.put(receipt, nowMillis, isOwn = true)
         refreshSnapshot(nowMillis)
         return forMessage
@@ -256,13 +256,16 @@ class MeshNode(
         // Every beacon doubles as a neighbour-energy advertisement and a coarse clock sample.
         neighbours[beacon.origin.raw] = NeighbourEnergy(beacon.origin, beacon.originBattery, nowMillis)
         governor.noteBeaconTimestamp(beacon.epochMinute, nowMillis, host.hasTrustedClock())
-        outbox.noteCarrier(beacon.messageId, beacon.origin.raw)
+        outbox.noteCarrier(beacon.messageId, beacon.type, beacon.origin.raw)
 
         when (beacon.type) {
             MessageType.RECEIPT, MessageType.SAFE -> {
-                // Delivery confirmed or cancelled: stop carrying the original. Freeing airtime
-                // is the point -- confirmation is an energy optimisation, not just a nicety.
-                outbox.remove(beacon.messageId)
+                // Delivery confirmed or cancelled: stop carrying the original SOS -- named
+                // explicitly as MessageType.SOS, not beacon.type, because this beacon's id
+                // *refers to* that SOS rather than identifying itself. Removing by beacon.type
+                // here would delete the RECEIPT/SAFE's own outbox entry the moment its echo came
+                // back from a neighbour, which is the bug this type-keyed outbox exists to fix.
+                outbox.remove(beacon.messageId, MessageType.SOS)
                 if (beacon.messageId == ownMessageId && beacon.type == MessageType.RECEIPT) {
                     _snapshot.value = _snapshot.value.copy(ownSosDelivered = true)
                 }
@@ -315,7 +318,7 @@ class MeshNode(
             context = ForwardingContext(
                 selfBatteryPercent = host.batteryPercent(),
                 selfCharging = host.isCharging(),
-                neighboursHoldingCopy = outbox.get(beacon.messageId)?.neighboursHoldingCopy ?: 0,
+                neighboursHoldingCopy = outbox.get(beacon.messageId, beacon.type)?.neighboursHoldingCopy ?: 0,
                 isOwnMessage = beacon.origin == id,
             ),
             random = random,
@@ -584,7 +587,7 @@ class MeshNode(
             nowMillis = nowMillis,
             attentive = isAttentive(nowMillis),
         )
-        val own = ownMessageId?.let { outbox.get(it)?.beacon }
+        val own = ownMessageId?.let { outbox.get(it, MessageType.SOS)?.beacon }
         _snapshot.value = _snapshot.value.copy(
             tier = plan.tier,
             batteryPercent = host.batteryPercent(),

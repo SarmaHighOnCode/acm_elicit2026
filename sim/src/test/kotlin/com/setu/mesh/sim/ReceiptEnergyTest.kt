@@ -26,6 +26,7 @@ class ReceiptEnergyTest {
 
         val energyAtTick = mutableListOf<Double>()
         var deliveryTick = -1
+        var clearedTick = -1
 
         val ticksPerMinute = (60_000 / World.TICK_MILLIS).toInt() // 240
         // Phase-locked rendezvous means a node only listens ~1s per 60s epoch (see
@@ -50,6 +51,18 @@ class ReceiptEnergyTest {
             if (deliveryTick == -1 && gatewayRole.delivered.isNotEmpty()) {
                 deliveryTick = t
             }
+            // The gateway accepting delivery is only the *start* of the RECEIPT's own trip back
+            // out across the mesh -- it still has to cross the same phase-locked, once-a-minute
+            // rendezvous windows the SOS did. Energy does not actually start dropping until every
+            // carrier has heard it and cleared the SOS, so track the tick that happens at,
+            // instead of assuming it coincides with first delivery.
+            if (deliveryTick != -1 && clearedTick == -1) {
+                val now = world.nodes.first().clock.nowMillis()
+                val stillCarrying = world.nodes.any { node ->
+                    !node.battery.isDead && node.meshNode.carriedMessages(now).any { it.type == MessageType.SOS }
+                }
+                if (!stillCarrying) clearedTick = t
+            }
         }
 
         assertTrue(deliveryTick != -1, "Message was never delivered to the gateway")
@@ -65,24 +78,35 @@ class ReceiptEnergyTest {
             }
         }
         assertTrue(outboxesWithSos == 0, "Expected all alive nodes to drop the SOS, but $outboxesWithSos nodes still had it")
+        assertTrue(clearedTick != -1, "SOS was delivered but never fully cleared from the mesh before the test ended")
 
-        // 2. Measure energy drop
+        // 2. Measure energy drop around full mesh-wide clearance, not around first delivery.
+        //
+        // "flood" seeds 3 concurrent SOS messages (see Scenario.originateSosMessages), and this
+        // mesh only grants ~1s of scan time per node per 60s rendezvous epoch (see docs/POWER.md
+        // §2). Emptying every carrier's outbox of every SOS -- which is what actually lets
+        // attentive mode (ATTENTIVE_AFTER_SOS_MILLIS, MeshNode.kt) lapse mesh-wide and beacon
+        // intervals lengthen -- takes many such epochs after the gateway's first accept, not the
+        // few seconds a window centred on deliveryTick would assume. Centring on clearedTick
+        // instead measures the "before" window while the mesh is still actively clearing (still
+        // representative of pre-reclaim load) and the "after" window once every node has both
+        // dropped the SOS and had its own last-heard-SOS attentive window expire.
         val windowTicks = ticksPerMinute * 5 // 5 minutes
 
-        val startBefore = maxOf(0, deliveryTick - windowTicks)
-        val endBefore = deliveryTick
+        val startBefore = maxOf(0, clearedTick - windowTicks)
+        val endBefore = clearedTick
         val energyBefore = energyAtTick[endBefore] - energyAtTick[startBefore]
         val minutesBefore = (endBefore - startBefore).toDouble() / ticksPerMinute
         val rateBefore = energyBefore / minutesBefore
 
-        val startAfter = deliveryTick
-        val endAfter = minOf(deliveryTick + windowTicks, testDurationTicks - 1)
+        val startAfter = clearedTick
+        val endAfter = minOf(clearedTick + windowTicks, testDurationTicks - 1)
         val energyAfter = energyAtTick[endAfter] - energyAtTick[startAfter]
         val minutesAfter = (endAfter - startAfter).toDouble() / ticksPerMinute
         val rateAfter = energyAfter / minutesAfter
 
-        println("Energy rate before delivery: $rateBefore mAh/min")
-        println("Energy rate after delivery:  $rateAfter mAh/min")
+        println("Energy rate before clearance: $rateBefore mAh/min")
+        println("Energy rate after clearance:  $rateAfter mAh/min")
 
         val dropPercent = ((rateBefore - rateAfter) / rateBefore) * 100
         println("Actual energy drop: ${String.format("%.2f", dropPercent)}%")
@@ -96,7 +120,7 @@ class ReceiptEnergyTest {
         // but meaningless direction check.
         assertTrue(
             dropPercent > 20.0,
-            "Expected a meaningful mesh-wide energy drop after delivery (>20%%), got %.2f%%".format(dropPercent),
+            "Expected a meaningful mesh-wide energy drop after clearance (>20%%), got %.2f%%".format(dropPercent),
         )
     }
 }
