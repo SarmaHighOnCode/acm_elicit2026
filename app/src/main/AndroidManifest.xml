@@ -20,6 +20,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
+    <!-- API 34+ requires this in addition to connectedDevice: the service keeps reading GPS
+         (AndroidNodeHost) the whole time it runs, not only while a BLE link is active. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
     <!-- Android 13+ requires this to post the foreground notification -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -66,6 +70,6 @@
         <service
             android:name=".service.SetuService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|location" />
     </application>
 </manifest>

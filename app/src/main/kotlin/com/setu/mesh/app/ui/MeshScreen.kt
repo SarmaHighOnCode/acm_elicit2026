@@ -52,7 +52,6 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
     val unknown = sorted.filter { !hasKnownPosition(it) }
     val selfFix = viewModel.selfFix
     val selfPosition = selfFix?.point
-    val degraded = isSelfFixDegraded(selfFix, now)
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (sorted.isEmpty()) {
@@ -73,7 +72,6 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
                                 onTapBeacon = {},
                                 nowMillis = now,
                                 selfFix = selfFix,
-                                degraded = degraded,
                             )
                         }
                     } else {
@@ -89,8 +87,7 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
                         SosCard(
                             beacon = beacon,
                             nowMillis = now,
-                            self = selfPosition,
-                            selfDegraded = degraded,
+                            selfFix = selfFix,
                             signalDbm = viewModel.signalDbmByOrigin[beacon.origin.raw],
                         )
                     }
@@ -101,8 +98,7 @@ fun MeshScreen(viewModel: MeshViewModel = remember { MeshViewModel() }) {
                         SosCard(
                             beacon = beacon,
                             nowMillis = now,
-                            self = selfPosition,
-                            selfDegraded = degraded,
+                            selfFix = selfFix,
                             signalDbm = viewModel.signalDbmByOrigin[beacon.origin.raw],
                         )
                     }

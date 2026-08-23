@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.RingtoneManager
@@ -25,8 +26,11 @@ import com.setu.mesh.app.data.NodeIdentity
 import com.setu.mesh.app.gateway.GatewayDispatcher
 import com.setu.mesh.app.gateway.UplinkMonitor
 import com.setu.mesh.core.engine.GatewayRole
+import com.setu.mesh.core.geo.distanceMetres
+import com.setu.mesh.core.engine.ForwardingRecord
 import com.setu.mesh.core.engine.MeshNode
 import com.setu.mesh.core.engine.NodeSnapshot
+import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.MessageId
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SituationFlags
@@ -43,6 +47,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /**
  * Keeps the BLE relay alive when the screen is off. Android will kill a background BLE
@@ -72,6 +78,14 @@ class SetuService : LifecycleService() {
     private var meshJob: Job? = null
     private var notificationJob: Job? = null
     private var snapshotJob: Job? = null
+    private var positionRefreshJob: Job? = null
+
+    // ---- position-refresh bookkeeping (§6): budget is per outstanding-SOS episode, not per
+    // lifetime of the service, so these reset on the null -> non-null transition of ownSos
+    // rather than on every resend (a resend, auto or manual, keeps the same episode going).
+    private var autoRefreshCount = 0
+    private var lastAutoRefreshAtMillis = 0L
+    private var hadOwnSosLastCheck = false
 
     /** Only non-null while this node is running as a gateway. See [UplinkMonitor]. */
     private var uplinkMonitor: UplinkMonitor? = null
@@ -92,11 +106,15 @@ class SetuService : LifecycleService() {
         val notification = buildNotification()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // Android 14+ requires explicit foreground service type at start time
+            // Android 14+ requires explicit foreground service type at start time. LOCATION is
+            // required alongside CONNECTED_DEVICE because AndroidNodeHost reads GPS for the
+            // entire lifetime of this service, not only while a BLE link happens to be open --
+            // see the matching manifest declaration.
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
@@ -267,6 +285,16 @@ class SetuService : LifecycleService() {
             }
         }
 
+        autoRefreshCount = 0
+        lastAutoRefreshAtMillis = 0L
+        hadOwnSosLastCheck = false
+        positionRefreshJob = scope.launch {
+            while (isActive) {
+                delay(POSITION_REFRESH_CHECK_INTERVAL_MILLIS)
+                maybeRefreshOwnSosPosition()
+            }
+        }
+
         Log.i(TAG_MESH, "Mesh started for node ${nodeId.short()}")
     }
 
@@ -282,6 +310,8 @@ class SetuService : LifecycleService() {
         uplinkMonitor?.stop()
         uplinkMonitor = null
         gatewayDispatcher = null
+        positionRefreshJob?.cancel()
+        positionRefreshJob = null
         val link = androidLink
         androidLink = null
         androidNodeHost?.shutdown()
@@ -292,6 +322,74 @@ class SetuService : LifecycleService() {
             scope.launch { link.shutdown() }
         }
         Log.i(TAG_MESH, "Mesh stopped")
+    }
+
+    /**
+     * Corrects an outstanding own SOS's position without waiting for the user to touch
+     * anything. RC1 is that the wire position is frozen at tap time; this is what unfreezes it
+     * once a materially better fix shows up, within a budget so it cannot itself become a source
+     * of mesh chatter.
+     *
+     * Resends when the live fix has moved beyond what both fixes' accuracy could plausibly
+     * explain as noise, or when it has gotten meaningfully more precise -- subject to a cooldown
+     * and a per-episode cap so a jittery GPS cannot retrigger this every 10 seconds forever.
+     */
+    private fun maybeRefreshOwnSosPosition() {
+        val node = meshNode ?: return
+        val host = androidNodeHost ?: return
+        val ownSos = node.snapshot.value.ownSos
+
+        if (ownSos == null) {
+            hadOwnSosLastCheck = false
+            autoRefreshCount = 0
+            lastAutoRefreshAtMillis = 0L
+            return
+        }
+        if (!hadOwnSosLastCheck) {
+            // A fresh episode: either the very first SOS, or a new one after the last was marked
+            // safe/delivered. The budget below belongs to this episode, not to the service's
+            // whole lifetime.
+            autoRefreshCount = 0
+            lastAutoRefreshAtMillis = 0L
+        }
+        hadOwnSosLastCheck = true
+
+        if (autoRefreshCount >= MAX_AUTO_REFRESHES_PER_SOS) return
+
+        val nowMillis = System.currentTimeMillis()
+        if (lastAutoRefreshAtMillis != 0L &&
+            nowMillis - lastAutoRefreshAtMillis < MIN_AUTO_REFRESH_INTERVAL_MILLIS
+        ) {
+            return
+        }
+
+        val liveFix = host.lastFix() ?: return
+        // No evidence this fix is any better than what is already on the wire -- nothing to act on.
+        val nowAccuracy = liveFix.accuracyMetres ?: return
+
+        // Unknown-on-the-wire (no fix at origination) behaves like "arbitrarily coarse" here: the
+        // displacement test below is trivially satisfied by GeoPoint.UNKNOWN's placeholder
+        // coordinates, and the improvement test always fires once nowAccuracy <= 30 m -- both are
+        // exactly the outcome wanted when the original SOS carried no location at all.
+        val txAccuracy = ownSos.senderAccuracyMetres ?: UNQUANTIFIED_TX_ACCURACY_METRES
+        val displacementMetres = distanceMetres(ownSos.position, liveFix.point)
+
+        val movedBeyondNoise = displacementMetres > hypot(txAccuracy, nowAccuracy.toDouble())
+        val improvedSignificantly = nowAccuracy < txAccuracy / 2 && nowAccuracy <= IMPROVEMENT_ACCURACY_CEILING_METRES
+        if (!movedBeyondNoise && !improvedSignificantly) return
+
+        // Same resend path as a user-triggered triage edit: a fresh MessageId (so dedup cannot
+        // suppress the correction) through originateSos, which already supersedes the previous
+        // own message. See the rewritten comment on selfFix() below for why this is safe.
+        node.originateSos(ownSos.flags, ownSos.souls, nowMillis)
+        autoRefreshCount++
+        lastAutoRefreshAtMillis = nowMillis
+        Log.i(
+            TAG_MESH,
+            "Auto-refreshed own SOS position: displacement=${displacementMetres.roundToInt()}m " +
+                "txAccuracy=${txAccuracy}m nowAccuracy=${nowAccuracy}m " +
+                "(refresh $autoRefreshCount/$MAX_AUTO_REFRESHES_PER_SOS)",
+        )
     }
 
     /** Originates a test SOS on the running mesh node, for the G3 two-phone bring-up test. */
@@ -319,6 +417,15 @@ class SetuService : LifecycleService() {
         val manager = getSystemService(NotificationManager::class.java) ?: return
         manager.notify(NOTIFICATION_ID, buildNotification(snapshot))
     }
+
+    /**
+     * Same guard as `AndroidNodeHost.isDebuggable`: the debug-only always-relay override lives in
+     * `:core` (`MeshNode.setAlwaysRelayOverride`), which cannot check `ApplicationInfo.FLAG_DEBUGGABLE`
+     * itself without importing Android, so the check has to happen here, at the one call site
+     * that can reach both a `Context` and the running node.
+     */
+    private fun isDebuggable(): Boolean =
+        (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     private fun ensureNotificationChannel() {
         val channel = NotificationChannel(
@@ -523,6 +630,32 @@ class SetuService : LifecycleService() {
         /** Notification churn is itself a battery cost; this is deliberately not per-tick. */
         private const val NOTIFICATION_UPDATE_MIN_INTERVAL_MILLIS = 3_000L
 
+        // ---- position refresh (§6): see maybeRefreshOwnSosPosition ----
+
+        /** How often the live fix is checked against what is on the wire. */
+        private const val POSITION_REFRESH_CHECK_INTERVAL_MILLIS = 10_000L
+
+        /** Floor between two auto-refreshes, regardless of how often better fixes show up. */
+        private const val MIN_AUTO_REFRESH_INTERVAL_MILLIS = 120_000L
+
+        /** Ceiling on auto-refreshes per outstanding-SOS episode, so a jittery GPS cannot turn
+         *  this into a second source of mesh chatter alongside the user's own triage edits. */
+        private const val MAX_AUTO_REFRESHES_PER_SOS = 3
+
+        /**
+         * Stand-in for "the wire carries no usable accuracy figure" (`senderAccuracyMetres ==
+         * null`, i.e. positionAccuracyClass 0: no fix at origination, or one worse than 100 m).
+         * Deliberately larger than any real class boundary so both refresh tests below resolve
+         * the way they should when the original SOS went out with no location at all: the
+         * displacement test is satisfied by `GeoPoint.UNKNOWN`'s placeholder coordinates already,
+         * and this sentinel makes the improvement test fire too, as soon as any real fix accurate
+         * to 30 m or better shows up.
+         */
+        private const val UNQUANTIFIED_TX_ACCURACY_METRES = 1_000.0
+
+        /** "Improved significantly" additionally requires the new fix to be this good outright. */
+        private const val IMPROVEMENT_ACCURACY_CEILING_METRES = 30f
+
         private val _snapshot = MutableStateFlow<NodeSnapshot?>(null)
 
         /**
@@ -554,6 +687,32 @@ class SetuService : LifecycleService() {
             attentiveRequested = active
             runningInstance?.meshNode?.setAttentive(active)
         }
+
+        /**
+         * Debug-only field-test aid: forces every relay decision to `RelayDecision.Relay` so a
+         * field test is never at the mercy of `ForwardingPolicy`'s probabilistic roll -- see
+         * `MeshNode.setAlwaysRelayOverride`. Shaped exactly like [setBatteryOverride]: a hard
+         * no-op in a release build regardless of caller, and a no-op if the mesh is not running.
+         * Unlike [setAttentive], not latched here -- there is no cold-start ordering problem to
+         * solve, since a field tester only ever flips this after the mesh (and this screen) are
+         * already up.
+         */
+        fun setAlwaysRelayOverride(active: Boolean) {
+            val instance = runningInstance
+            if (instance == null || !instance.isDebuggable()) {
+                Log.w(TAG_MESH, "setAlwaysRelayOverride ignored: mesh not running, or release build")
+                return
+            }
+            instance.meshNode?.setAlwaysRelayOverride(active)
+        }
+
+        /**
+         * The last 32 relay decisions this node has made, newest first -- RC4's answer to "did
+         * this node even decide to forward that beacon, and why not". Empty when the mesh is not
+         * running. See `MeshNode.recentForwardingDecisions` and `ForwardingRecord`.
+         */
+        fun recentForwardingDecisions(): List<ForwardingRecord> =
+            runningInstance?.meshNode?.recentForwardingDecisions() ?: emptyList()
 
         /**
          * Latched here, not merely forwarded. On a cold start `MainActivity.onStart()` runs
@@ -617,13 +776,18 @@ class SetuService : LifecycleService() {
          * and has no reason to carry display-only accuracy, since `MeshNode` itself only ever
          * needs the point through `NodeHost.position()`.
          *
-         * Do not wire a new fix arriving here into an automatic re-send of an outstanding SOS to
-         * "correct" its position. The seen-set dedups on `MessageId`, so a beacon reusing the
-         * same id is silently suppressed by every peer that already relayed it -- the correction
-         * never reaches anyone. Minting a fresh id instead puts two live SOS from one person into
-         * a mesh whose whole design goal is to conserve airtime. The only sanctioned resend path
-         * is the existing one in `SosScreen` (edit triage, resend), which is a deliberate user
-         * action, not something a background fix update should ever trigger on its own.
+         * What this does NOT do any more is the whole story of what used to be forbidden here:
+         * this comment previously said a new fix arriving must never trigger an automatic resend
+         * of an outstanding SOS, on the theory that resending was unsafe. That theory was wrong
+         * about *why* it would be unsafe. What is actually forbidden is reusing a `MessageId` --
+         * the seen-set dedups on it, so a beacon reusing the same id is silently suppressed by
+         * every peer that already relayed it, and the correction never reaches anyone -- and
+         * leaving two live SOS from one person in a mesh built to conserve airtime. Neither
+         * applies to [SetuService.maybeRefreshOwnSosPosition]: it mints a fresh id through the
+         * same `MeshNode.originateSos` path a manual "tap to resend" uses, which already
+         * supersedes the previous own message (`MeshNode.kt` around `originateSos`), so there is
+         * still exactly one live SOS per person at any time. The budget and cooldown around that
+         * call exist to bound airtime, not because re-origination itself is unsafe.
          */
         fun selfFix(): SelfFix? = runningInstance?.androidNodeHost?.lastFix()
 
@@ -632,5 +796,38 @@ class SetuService : LifecycleService() {
          * on top of [selfFix] so there is one source of truth for "what is my position".
          */
         fun selfPosition(): com.setu.mesh.core.model.GeoPoint? = selfFix()?.point
+
+        /**
+         * The position and accuracy class actually broadcast in this node's current own SOS,
+         * plus when the auto-refresh loop last corrected it -- read straight off
+         * `NodeSnapshot.ownSos` rather than tracked in parallel, so it can never drift from what
+         * is really on the wire. This is deliberately distinct from [selfFix]/[selfPosition]:
+         * the gap between the two is exactly RC1 from the field test -- a phone's own screen can
+         * honestly read "±10 m · 2s ago" while the beacon still on air carries a fix accepted
+         * minutes earlier -- and that gap was invisible before this task. Null when the mesh is
+         * not running or has no outstanding own SOS.
+         */
+        fun transmittedOwnPosition(): TransmittedPosition? {
+            val ownSos = runningInstance?.meshNode?.snapshot?.value?.ownSos ?: return null
+            val lastRefresh = runningInstance?.lastAutoRefreshAtMillis?.takeIf { it != 0L }
+            return TransmittedPosition(
+                position = ownSos.position,
+                accuracyClass = ownSos.positionAccuracyClass,
+                lastRefreshAtMillis = lastRefresh,
+            )
+        }
     }
 }
+
+/**
+ * What [SetuService.transmittedOwnPosition] reports: the point and accuracy class actually on
+ * the wire in this node's own outstanding SOS, and when the auto-refresh loop
+ * (`SetuService.maybeRefreshOwnSosPosition`) last corrected it.
+ */
+data class TransmittedPosition(
+    val position: GeoPoint,
+    /** 0..3 per docs/PROTOCOL.md §2. See `SosBeacon.senderAccuracyMetres` for what it claims. */
+    val accuracyClass: Int,
+    /** Wall-clock millis of the last auto-refresh this episode, or null if none has fired yet. */
+    val lastRefreshAtMillis: Long?,
+)

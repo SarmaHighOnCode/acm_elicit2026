@@ -23,14 +23,53 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * True-north heading in degrees, or null when this device cannot provide one.
+ * What [rememberHeadingReading] actually knows this frame -- not just a bearing, but how much to
+ * trust it.
+ *
+ * [degrees] is null exactly when no usable sensor combination exists on this device -- see
+ * [rememberHeadingReading]'s doc for the fallback chain. [accuracyStatus] is the sensor's own
+ * last-reported `SensorManager.SENSOR_STATUS_*` (`SENSOR_STATUS_NO_CONTACT` before this device
+ * has a compass at all, or before the first callback lands); before this field existed, an
+ * uncalibrated magnetometer drew a confidently wrong arrow with no warning at all.
+ * [estimatedAccuracyDegrees] is the platform's own heading-accuracy estimate -- the previously
+ * discarded 5th element of a 5-element rotation vector on vendors that report it -- or null when
+ * the sensor never supplied one.
+ */
+data class HeadingReading(
+    val degrees: Float?,
+    val accuracyStatus: Int,
+    val estimatedAccuracyDegrees: Float?,
+)
+
+/**
+ * True when the compass sensor is reporting low or unreliable accuracy right now -- surfaced so
+ * [RelativeMap] can say so instead of silently drawing an arrow an uncalibrated magnetometer
+ * cannot actually back up.
+ */
+val HeadingReading.needsCalibration: Boolean
+    get() = accuracyStatus == SensorManager.SENSOR_STATUS_UNRELIABLE ||
+        accuracyStatus == SensorManager.SENSOR_STATUS_ACCURACY_LOW
+
+/**
+ * Real Android geomagnetic-model declination for [self], in degrees -- the correction from
+ * magnetic to true north that every bearing this app computes from lat/lon needs, and that the
+ * raw rotation-vector sensor does not supply on its own. A free top-level function (not just
+ * logic buried inside [rememberHeadingReading]'s sensor callback) so
+ * [com.setu.mesh.app.ui.dev.PositionDiagnostics] can show a field tester the exact number being
+ * applied, computed the identical way.
+ */
+fun declinationDegrees(self: GeoPoint, atMillis: Long = System.currentTimeMillis()): Float =
+    GeomagneticField(self.latitude.toFloat(), self.longitude.toFloat(), 0f, atMillis).declination
+
+/**
+ * True-north heading, or a null [HeadingReading.degrees] when this device cannot provide one.
  *
  * Sensor preference order: fused `TYPE_ROTATION_VECTOR` (gyro-stabilised, the best available),
  * falling back to `TYPE_GEOMAGNETIC_ROTATION_VECTOR` (still fused, more jitter without a gyro),
  * and finally raw `TYPE_ACCELEROMETER` + `TYPE_MAGNETIC_FIELD` via `getRotationMatrix` on
  * hardware that exposes neither rotation-vector sensor. A phone with no magnetometer at all --
- * not rare on low-end hardware -- returns null; [RelativeMap] falls back to north-up rather than
- * crash or display a heading that was never real.
+ * not rare on low-end hardware -- returns a null [HeadingReading.degrees]; [RelativeMap] falls
+ * back to north-up rather than crash or display a heading that was never real.
  *
  * [self] feeds the magnetic-to-true-north correction only; it is read live from a
  * [rememberUpdatedState] rather than as a `DisposableEffect` key, so a new GPS fix (which can
@@ -39,10 +78,12 @@ import kotlin.math.sin
  * compass visibly jump on every fix.
  */
 @Composable
-fun rememberTrueHeadingDegrees(self: GeoPoint?): Float? {
+fun rememberHeadingReading(self: GeoPoint?): HeadingReading {
     val context = LocalContext.current
     val latestSelf = rememberUpdatedState(self)
     var headingDegrees by remember { mutableStateOf<Float?>(null) }
+    var accuracyStatus by remember { mutableStateOf(SensorManager.SENSOR_STATUS_NO_CONTACT) }
+    var estimatedAccuracyDegrees by remember { mutableStateOf<Float?>(null) }
 
     DisposableEffect(context) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
@@ -57,6 +98,8 @@ fun rememberTrueHeadingDegrees(self: GeoPoint?): Float? {
             // No usable sensor combination on this device -- north-up is the honest fallback,
             // not a crash and not a frozen fake reading.
             headingDegrees = null
+            accuracyStatus = SensorManager.SENSOR_STATUS_NO_CONTACT
+            estimatedAccuracyDegrees = null
             return@DisposableEffect onDispose {}
         }
 
@@ -77,20 +120,41 @@ fun rememberTrueHeadingDegrees(self: GeoPoint?): Float? {
         var haveGravity = false
         var haveGeomagnetic = false
 
+        // GeomagneticField's own model computation is not free, and the raw rotation-vector
+        // sensor delivers at ~16 Hz -- recomputing it on every single sample bought nothing,
+        // since declination only meaningfully changes when the device has actually travelled a
+        // real distance, not every 60 ms. Cached and only refreshed on a meaningful position
+        // change, with a time-based fallback refresh for the (irrelevant at session timescales,
+        // but still correct) case where the device never moves at all.
+        var cachedDeclinationDegrees = 0f
+        var cachedDeclinationLatitude: Double? = null
+        var cachedDeclinationLongitude: Double? = null
+        var cachedDeclinationAtMillis = 0L
+
+        fun currentDeclinationDegrees(point: GeoPoint): Float {
+            val nowMillis = System.currentTimeMillis()
+            val lastLatitude = cachedDeclinationLatitude
+            val lastLongitude = cachedDeclinationLongitude
+            val movedMeaningfully = lastLatitude == null || lastLongitude == null ||
+                abs(point.latitude - lastLatitude) > DECLINATION_CACHE_MOVE_THRESHOLD_DEGREES ||
+                abs(point.longitude - lastLongitude) > DECLINATION_CACHE_MOVE_THRESHOLD_DEGREES
+            val tooOld = nowMillis - cachedDeclinationAtMillis > DECLINATION_CACHE_MAX_AGE_MILLIS
+            if (movedMeaningfully || tooOld) {
+                cachedDeclinationDegrees = declinationDegrees(point, nowMillis)
+                cachedDeclinationLatitude = point.latitude
+                cachedDeclinationLongitude = point.longitude
+                cachedDeclinationAtMillis = nowMillis
+            }
+            return cachedDeclinationDegrees
+        }
+
         fun publishMagneticAzimuthDegrees(azimuthDegrees: Float) {
             // The rotation vector's reference is magnetic north, but every bearing this app
             // computes from lat/lon (relativeOffsetMetres, bearingDegrees) is relative to true
             // north. Declination reaches double-digit degrees in parts of the world, so this is
             // a real error to skip, not a rounding detail -- but it needs a self fix to compute,
             // so it is only applied when one exists.
-            val declination = latestSelf.value?.let {
-                GeomagneticField(
-                    it.latitude.toFloat(),
-                    it.longitude.toFloat(),
-                    0f,
-                    System.currentTimeMillis(),
-                ).declination
-            } ?: 0f
+            val declination = latestSelf.value?.let { currentDeclinationDegrees(it) } ?: 0f
             val trueDegrees = (azimuthDegrees + declination + 360f) % 360f
 
             val radians = Math.toRadians(trueDegrees.toDouble())
@@ -165,15 +229,28 @@ fun rememberTrueHeadingDegrees(self: GeoPoint?): Float? {
                         // 4 with a zero w would silently produce a wrong matrix.
                         val vector = if (event.values.size > 4) {
                             System.arraycopy(event.values, 0, rotationVector, 0, 4)
+                            // The 5th element -- discarded entirely before this -- is the
+                            // platform's own estimated heading accuracy in radians. Surfaced so
+                            // a field tester can see how much the sensor itself distrusts this
+                            // reading, instead of only ever seeing the arrow it draws.
+                            estimatedAccuracyDegrees = Math.toDegrees(event.values[4].toDouble()).toFloat()
                             rotationVector
                         } else {
+                            estimatedAccuracyDegrees = null
                             event.values
                         }
                         SensorManager.getRotationMatrixFromVector(rotationMatrix, vector)
                         remapAndPublish()
                     }
                     Sensor.TYPE_ACCELEROMETER -> {
-                        System.arraycopy(event.values, 0, gravity, 0, minOf(event.values.size, 3))
+                        // Standard Android low-pass filter: isolates the slow-moving gravity
+                        // component from the noisier user-acceleration one instead of feeding
+                        // raw (jittery) samples straight into getRotationMatrix -- this is what
+                        // made the raw-fallback heading twitchier than the fused rotation-vector
+                        // path on hardware that has to fall back to it.
+                        for (i in 0 until minOf(event.values.size, 3)) {
+                            gravity[i] = GRAVITY_LOW_PASS_ALPHA * gravity[i] + (1 - GRAVITY_LOW_PASS_ALPHA) * event.values[i]
+                        }
                         haveGravity = true
                     }
                     Sensor.TYPE_MAGNETIC_FIELD -> {
@@ -181,6 +258,9 @@ fun rememberTrueHeadingDegrees(self: GeoPoint?): Float? {
                         haveGeomagnetic = true
                     }
                 }
+                // Only once both inputs have been observed at least once -- before that,
+                // getRotationMatrix would be fed a still-zeroed array on whichever side hasn't
+                // reported yet, producing a heading out of pure noise rather than no heading.
                 if (rotationSensor == null && haveGravity && haveGeomagnetic) {
                     if (SensorManager.getRotationMatrix(rotationMatrix, null, gravity, geomagnetic)) {
                         remapAndPublish()
@@ -188,7 +268,9 @@ fun rememberTrueHeadingDegrees(self: GeoPoint?): Float? {
                 }
             }
 
-            override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) = Unit
+            override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
+                accuracyStatus = accuracy
+            }
         }
 
         if (rotationSensor != null) {
@@ -201,7 +283,7 @@ fun rememberTrueHeadingDegrees(self: GeoPoint?): Float? {
         onDispose { sensorManager.unregisterListener(listener) }
     }
 
-    return headingDegrees
+    return HeadingReading(headingDegrees, accuracyStatus, estimatedAccuracyDegrees)
 }
 
 // Low enough to damp hand jitter, high enough that the map still feels live when the phone
@@ -213,3 +295,14 @@ private const val HEADING_EMA_ALPHA = 0.15f
  * screen is the better reference for "which way am I facing"; below it, the back of the phone is.
  */
 private const val FLAT_ENOUGH_Z_COMPONENT = 0.7071f
+
+// Android's standard low-pass constant for isolating gravity from a raw accelerometer stream.
+private const val GRAVITY_LOW_PASS_ALPHA = 0.8f
+
+// ~0.01 degree of latitude/longitude is roughly 1 km -- declination changes negligibly over
+// distances far larger than BLE range, so re-deriving it on every sample bought nothing.
+private const val DECLINATION_CACHE_MOVE_THRESHOLD_DEGREES = 0.01
+
+// Defensive time-based refresh for a device that never moves at all; matches the 5-minute scale
+// AndroidNodeHost already uses for its own fix-age thresholds.
+private const val DECLINATION_CACHE_MAX_AGE_MILLIS = 5 * 60_000L

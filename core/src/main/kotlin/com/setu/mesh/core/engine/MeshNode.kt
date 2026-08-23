@@ -21,9 +21,12 @@ import com.setu.mesh.core.power.ProtocolTuning
 import com.setu.mesh.core.power.RadioPlan
 import com.setu.mesh.core.routing.ForwardingContext
 import com.setu.mesh.core.routing.ForwardingPolicy
+import com.setu.mesh.core.routing.CancelledSet
 import com.setu.mesh.core.routing.Outbox
+import com.setu.mesh.core.routing.ReconsiderTracker
 import com.setu.mesh.core.routing.RelayDecision
 import com.setu.mesh.core.routing.SeenSet
+import com.setu.mesh.core.routing.SuppressReason
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,6 +61,29 @@ data class NodeSnapshot(
 )
 
 /**
+ * One decision this node made — or a non-decision it needs told apart from one — about a beacon
+ * it heard. Kept in [MeshNode.recentForwardingDecisions] so a field tester can answer "did this
+ * node even decide to forward it, and why not" without a debugger attached, which was RC4's whole
+ * problem: [onBeaconHeard]'s [RelayDecision] used to be computed and immediately discarded.
+ *
+ * [attempt] is the [ForwardingPolicy.decide] attempt number this record reflects: 1 for the first
+ * time the policy ran for this dedup key, 2 or 3 for a reconsideration of a lost
+ * [SuppressReason.PROBABILISTIC] roll (see [onBeaconHeard]), or 0 when the policy never ran at
+ * all — a [SuppressReason.MALFORMED] frame, or a [SuppressReason.DUPLICATE] hearing this node
+ * already has a terminal answer for.
+ */
+data class ForwardingRecord(
+    val atMillis: Long,
+    val messageId: MessageId,
+    val origin: NodeId,
+    val type: MessageType,
+    val hops: Int,
+    val rssiDbm: Int?,
+    val decision: RelayDecision,
+    val attempt: Int,
+)
+
+/**
  * The protocol engine. Transport-agnostic by construction: it talks to a [Link] and a
  * [NodeHost] and knows nothing about Bluetooth, Android, or the simulator.
  *
@@ -83,13 +109,36 @@ class MeshNode(
 ) {
     private val seen = SeenSet()
     private val outbox = Outbox()
+    private val cancelled = CancelledSet()
     private val neighbours = LinkedHashMap<Int, NeighbourEnergy>()
+
+    /**
+     * Dedup key → reconsideration attempts spent so far on a lost [SuppressReason.PROBABILISTIC]
+     * roll. See [onBeaconHeard] and `docs/PROTOCOL.md` §6.
+     */
+    private val reconsider = ReconsiderTracker()
+
+    /**
+     * Guards [forwardingHistory]: [onBeaconHeard] writes from the link-event collector coroutine
+     * ([run]'s `launch`), while [recentForwardingDecisions] is read from the UI thread (a
+     * `DiagnosticsScreen` poll loop, same pattern as [snapshot]). A plain `ArrayDeque` is not
+     * safe for that without one.
+     */
+    private val forwardingHistoryLock = Any()
+    private val forwardingHistory = ArrayDeque<ForwardingRecord>()
 
     /** Smoothed signal strength for origins heard **directly**, keyed by origin id. */
     private val directSignals = LinkedHashMap<Int, DirectSignal>()
 
     private var sequence = 0
     private var ownMessageId: MessageId? = null
+    /**
+     * Tracks the outstanding own-SAFE's outbox key so that a subsequent [originateSos] can remove
+     * it. [markSafe] nulls [ownMessageId] (correctly — the SOS is cancelled), but the SAFE itself
+     * occupies the outbox under the *original* SOS's messageId. Without this, nothing ever removes
+     * that isOwn=true entry: [Outbox.purgeStale] and [Outbox.evictOne] both exempt own entries.
+     */
+    private var ownSafeMessageId: MessageId? = null
     private var carouselOffset = 0
     private var lastRadioProfile: RadioProfile? = null
 
@@ -100,6 +149,20 @@ class MeshNode(
     private var foregroundAttentive: Boolean = false
     @Volatile
     private var attentiveUntilMillis: Long = 0L
+
+    /**
+     * Debug-only field-test aid: when set, [onBeaconHeard] forces every forwarding decision to
+     * [RelayDecision.Relay] instead of leaving it to the probabilistic roll, so a field test is
+     * never at the mercy of a dice roll. Dedup and TTL still apply in full — this removes only
+     * the probability gate, not the protocol's actual safety valves.
+     *
+     * `:core` cannot itself check `ApplicationInfo.FLAG_DEBUGGABLE` without importing Android,
+     * which this module must never do — so unlike a release build being unable to reach this at
+     * all, the guard against enabling it lives at the call site instead. See
+     * `SetuService.setAlwaysRelayOverride`.
+     */
+    @Volatile
+    private var alwaysRelayOverride: Boolean = false
 
     private val _snapshot = MutableStateFlow(NodeSnapshot(id = id))
     val snapshot: StateFlow<NodeSnapshot> = _snapshot.asStateFlow()
@@ -161,6 +224,7 @@ class MeshNode(
             flags = flags,
             souls = souls,
             originBattery = host.batteryPercent(),
+            positionAccuracyClass = host.positionAccuracyClass(),
         )
 
         // A resend *replaces* our SOS; it never adds a second one. The id has to change --
@@ -173,6 +237,9 @@ class MeshNode(
         // Outbox.evictOne, so nothing ever reclaims them: the carried count only climbs, and
         // past capacity the outbox grows without bound.
         ownMessageId?.let { outbox.remove(it, MessageType.SOS) }
+        // Also remove any stale own-SAFE left by a prior markSafe → originateSos cycle.
+        // markSafe nulls ownMessageId, so the line above cannot reach the SAFE entry.
+        ownSafeMessageId?.let { outbox.remove(it, MessageType.SAFE); ownSafeMessageId = null }
 
         ownMessageId = messageId
         seen.addIfNew(dedupKey(beacon), nowMillis)
@@ -197,14 +264,18 @@ class MeshNode(
             // stays correct because the seen-set key folds in the message type.
             messageId = original,
             origin = id,
+            // SAFE carries this node's own current position/accuracy, not the outstanding SOS's --
+            // whoever hears "I am safe" should learn where that confirmation actually came from.
             position = host.position() ?: GeoPoint.UNKNOWN,
             epochMinute = epochMinute,
             flags = SituationFlags(),
             souls = 0,
             originBattery = host.batteryPercent(),
+            positionAccuracyClass = host.positionAccuracyClass(),
         )
         outbox.remove(original, MessageType.SOS)
         ownMessageId = null
+        ownSafeMessageId = original
         seen.addIfNew(dedupKey(safe), nowMillis)
         outbox.put(safe, nowMillis, isOwn = true)
         refreshSnapshot(nowMillis)
@@ -222,11 +293,15 @@ class MeshNode(
             hops = 0,
             messageId = forMessage,
             origin = id,
+            // A RECEIPT's position describes the gateway that accepted delivery, not the
+            // victim's -- that gateway's own fix quality is what's relevant here, so it gets the
+            // same treatment as the other two origination points.
             position = host.position() ?: GeoPoint.UNKNOWN,
             epochMinute = epochMinute,
             flags = SituationFlags(),
             souls = 0,
             originBattery = host.batteryPercent(),
+            positionAccuracyClass = host.positionAccuracyClass(),
         )
         seen.addIfNew(dedupKey(receipt), nowMillis)
         outbox.remove(forMessage, MessageType.SOS)
@@ -249,7 +324,28 @@ class MeshNode(
         rssiDbm: Int? = null,
     ): RelayDecision {
         val beacon = BeaconCodec.decode(payload)
-            ?: return RelayDecision.Suppress(com.setu.mesh.core.routing.SuppressReason.TTL_EXHAUSTED)
+        if (beacon == null) {
+            // Not a policy outcome at all: bad CRC or an unknown version, rejected before routing
+            // ever sees it. Distinct from PROBABILISTIC so a field tester can tell "the radio
+            // handed us garbage" from "the dice roll came up wrong" -- both used to be invisible
+            // in exactly the same way. There is no decoded beacon to describe here, so identity
+            // fields are sentinels; rssiDbm is still real, since the radio reported it before
+            // decoding was attempted.
+            val decision = RelayDecision.Suppress(SuppressReason.MALFORMED)
+            recordForwarding(
+                ForwardingRecord(
+                    atMillis = nowMillis,
+                    messageId = MessageId(0),
+                    origin = NodeId.UNKNOWN,
+                    type = MessageType.RESERVED,
+                    hops = 0,
+                    rssiDbm = rssiDbm,
+                    decision = decision,
+                    attempt = 0,
+                ),
+            )
+            return decision
+        }
 
         noteDirectSignal(beacon, rssiDbm, nowMillis)
 
@@ -266,6 +362,9 @@ class MeshNode(
                 // here would delete the RECEIPT/SAFE's own outbox entry the moment its echo came
                 // back from a neighbour, which is the bug this type-keyed outbox exists to fix.
                 outbox.remove(beacon.messageId, MessageType.SOS)
+                // Remember that this messageId's SOS is cancelled, so reconsideration and
+                // post-SeenSet re-hearings cannot resurrect it.
+                cancelled.record(beacon.messageId, nowMillis)
                 if (beacon.messageId == ownMessageId && beacon.type == MessageType.RECEIPT) {
                     _snapshot.value = _snapshot.value.copy(ownSosDelivered = true)
                 }
@@ -288,16 +387,74 @@ class MeshNode(
             else -> Unit
         }
 
-        if (!seen.addIfNew(dedupKey(beacon), nowMillis)) {
-            return RelayDecision.Suppress(com.setu.mesh.core.routing.SuppressReason.PROBABILISTIC)
+        // RC4's second defect: SeenSet.addIfNew alone used to be the entire forwarding gate, and
+        // it ran *before* the policy -- so a message that lost its probabilistic roll was marked
+        // seen and never looked at again for the rest of the 10-minute window, no matter how many
+        // more times it was heard. The side effects above (clock sample, carrier count, RSSI)
+        // still run exactly once per hearing regardless of any of this -- they are unconditional,
+        // same as before the restructure -- but the *forwarding* decision now distinguishes three
+        // cases: a first hearing, a hearing worth reconsidering, and a hearing with nothing left
+        // to decide.
+        val key = dedupKey(beacon)
+        val firstHearing = seen.addIfNew(key, nowMillis)
+        val relayed = beacon.relayed()
+
+        val decision: RelayDecision
+        var attempt = 0
+
+        // A cancelled SOS must never be re-adopted, whether via reconsideration (the lost
+        // PROBABILISTIC roll path) or as a "fresh" first hearing after SeenSet forgets M.
+        // CancelledSet's 6-hour expiry outlives SeenSet's 10 minutes by design — see its
+        // class doc. Only SOS beacons can be cancelled; SAFE/RECEIPT relay normally.
+        if (beacon.type == MessageType.SOS && cancelled.contains(beacon.messageId, nowMillis)) {
+            decision = RelayDecision.Suppress(SuppressReason.CANCELLED)
+            reconsider.clear(key.raw)
+        } else if (relayed == null) {
+            // Hop budget spent on *this* hearing's path. Terminal, same as ENERGY_GATE below: a
+            // shorter path might still bring a relayable copy later, but that would arrive as a
+            // fresh hearing with its own ttl, not as a reconsideration of this one.
+            decision = RelayDecision.Suppress(SuppressReason.TTL_EXHAUSTED)
+            if (!firstHearing) reconsider.clear(key.raw)
+        } else if (firstHearing) {
+            attempt = 1
+            decision = runForwardingPolicy(relayed, beacon, nowMillis)
+            if (isReconsiderable(decision)) reconsider.recordAttempt(key.raw, attempt, nowMillis)
+        } else {
+            val attemptsSoFar = reconsider.attempts(key.raw, nowMillis)
+            if (attemptsSoFar != null && attemptsSoFar < MAX_RECONSIDER_ATTEMPTS) {
+                // The reconsideration itself: same policy, current context. neighboursHoldingCopy
+                // has had a chance to rise since the last attempt -- other nodes may have relayed
+                // in the meantime, which outbox.noteCarrier above just recorded for free -- and
+                // densityDamp shrinks the relay probability precisely as that redundancy arrives.
+                // That is what makes retrying a lost roll safe: it cannot multiply traffic the
+                // way blindly re-relaying would, because the very thing that makes a retry more
+                // likely to succeed (more carriers already seen) is also what damps its
+                // probability back down. See docs/PROTOCOL.md §6.
+                attempt = attemptsSoFar + 1
+                decision = runForwardingPolicy(relayed, beacon, nowMillis)
+                when {
+                    decision is RelayDecision.Relay -> reconsider.clear(key.raw)
+                    isReconsiderable(decision) && attempt < MAX_RECONSIDER_ATTEMPTS ->
+                        reconsider.recordAttempt(key.raw, attempt, nowMillis)
+                    // ENERGY_GATE (terminal) or the reconsideration budget just ran out.
+                    else -> reconsider.clear(key.raw)
+                }
+            } else {
+                // Nothing left to decide: already relayed, already given a terminal
+                // TTL_EXHAUSTED/ENERGY_GATE verdict, or its reconsideration budget is spent. A
+                // field tester still needs to see that this beacon arrived again -- just not as
+                // a fresh policy run.
+                decision = RelayDecision.Suppress(SuppressReason.DUPLICATE)
+            }
         }
 
-        // Gated on the dedup check above, not on beacon.type alone: without that, every
-        // re-hear of an already-seen SOS (this node relays it, a neighbour relays it back) would
-        // fire another alert. Placing this after seen.addIfNew() means it fires exactly once per
-        // distinct SOS this node ever accepts as a gateway, which is what "send one SMS per
-        // emergency" requires.
-        if (beacon.type == MessageType.SOS) {
+        // Gated on firstHearing, not just beacon.type: without that, every re-hear of an
+        // already-seen SOS (this node relays it, a neighbour relays it back) would fire another
+        // alert. Placing this on firstHearing means it fires exactly once per distinct SOS this
+        // node ever learns of, which is what "send one SMS per emergency" / "buzz once" require.
+        // Also excludes an SOS already on the cancelled set -- a stale echo of an already-resolved
+        // emergency must not re-trigger "someone nearby needs help right now".
+        if (beacon.type == MessageType.SOS && firstHearing && !cancelled.contains(beacon.messageId, nowMillis)) {
             gatewayRole?.let { role ->
                 if (role.acceptDelivery(beacon.messageId, nowMillis) != null) {
                     onGatewayAlert?.invoke(beacon)
@@ -310,28 +467,75 @@ class MeshNode(
             }
         }
 
-        val relayed = beacon.relayed()
-            ?: return RelayDecision.Suppress(com.setu.mesh.core.routing.SuppressReason.TTL_EXHAUSTED)
-
-        val decision = ForwardingPolicy.decide(
-            beacon = relayed,
-            context = ForwardingContext(
-                selfBatteryPercent = host.batteryPercent(),
-                selfCharging = host.isCharging(),
-                neighboursHoldingCopy = outbox.get(beacon.messageId, beacon.type)?.neighboursHoldingCopy ?: 0,
-                isOwnMessage = beacon.origin == id,
+        recordForwarding(
+            ForwardingRecord(
+                atMillis = nowMillis,
+                messageId = beacon.messageId,
+                origin = beacon.origin,
+                type = beacon.type,
+                hops = beacon.hops,
+                rssiDbm = rssiDbm,
+                decision = decision,
+                attempt = attempt,
             ),
-            random = random,
-            energyGateOverride = tuning.energyGateOverride,
         )
+
+        refreshSnapshot(nowMillis)
+        return decision
+    }
+
+    /** True only for the one suppression reason [onBeaconHeard] is willing to look at again. */
+    private fun isReconsiderable(decision: RelayDecision): Boolean =
+        decision is RelayDecision.Suppress && decision.reason == SuppressReason.PROBABILISTIC
+
+    /**
+     * Runs [ForwardingPolicy.decide] for [relayed] (already ttl-1/hops+1'd from [original]) and
+     * applies a [RelayDecision.Relay]'s side effects. Shared by the first hearing and every
+     * reconsideration so the two paths cannot drift apart -- both need the *current* context
+     * (battery, neighbour count), never a snapshot from whenever this dedup key was first heard.
+     */
+    private fun runForwardingPolicy(relayed: SosBeacon, original: SosBeacon, nowMillis: Long): RelayDecision {
+        val decision = if (alwaysRelayOverride) {
+            // Debug-only field-test aid: skips the dice roll entirely. Dedup and TTL above still
+            // apply in full -- this removes only the probability gate, not the protocol's actual
+            // safety valves.
+            RelayDecision.Relay(1.0)
+        } else {
+            ForwardingPolicy.decide(
+                beacon = relayed,
+                context = ForwardingContext(
+                    selfBatteryPercent = host.batteryPercent(),
+                    selfCharging = host.isCharging(),
+                    neighboursHoldingCopy = outbox.get(original.messageId, original.type)?.neighboursHoldingCopy ?: 0,
+                    isOwnMessage = original.origin == id,
+                ),
+                random = random,
+                energyGateOverride = tuning.energyGateOverride,
+            )
+        }
 
         if (decision is RelayDecision.Relay) {
             outbox.put(relayed, nowMillis, isOwn = false)
             governor.ledger.recordRelay()
         }
-
-        refreshSnapshot(nowMillis)
         return decision
+    }
+
+    /** Records [record] into [forwardingHistory], evicting the oldest once past capacity. */
+    private fun recordForwarding(record: ForwardingRecord) {
+        synchronized(forwardingHistoryLock) {
+            forwardingHistory.addFirst(record)
+            while (forwardingHistory.size > FORWARDING_HISTORY_CAPACITY) forwardingHistory.removeLast()
+        }
+    }
+
+    /**
+     * The last [FORWARDING_HISTORY_CAPACITY] forwarding decisions this node has made, newest
+     * first. This is RC4's fix: on real hardware there was previously no way to answer "did this
+     * node even decide to forward that beacon, and why not" -- see [ForwardingRecord].
+     */
+    fun recentForwardingDecisions(): List<ForwardingRecord> = synchronized(forwardingHistoryLock) {
+        forwardingHistory.toList()
     }
 
     // ---------------------------------------------------------------- radio plan
@@ -346,6 +550,11 @@ class MeshNode(
      */
     fun setAttentive(active: Boolean) {
         foregroundAttentive = active
+    }
+
+    /** See [alwaysRelayOverride]. */
+    fun setAlwaysRelayOverride(active: Boolean) {
+        alwaysRelayOverride = active
     }
 
     /**
@@ -374,6 +583,19 @@ class MeshNode(
      * carrying messages, successive calls rotate through the outbox so everything gets airtime.
      */
     fun beaconsToAdvertise(slots: Int, nowMillis: Long): List<ByteArray> {
+        // Reclaim an own-SAFE that has outlived its useful broadcast window. Own entries are
+        // exempt from Outbox.purgeStale / evictOne, so this is the only path that removes them.
+        // OWN_SAFE_BROADCAST_MILLIS matches SeenSet's expiry: once every peer that heard the
+        // SAFE has it in their seen-set, broadcasting it further is pure airtime waste.
+        ownSafeMessageId?.let { safeId ->
+            val entry = outbox.get(safeId, MessageType.SAFE)
+            if (entry != null && nowMillis - entry.addedAtMillis >= OWN_SAFE_BROADCAST_MILLIS) {
+                outbox.remove(safeId, MessageType.SAFE)
+                ownSafeMessageId = null
+                refreshSnapshot(nowMillis)
+            }
+        }
+
         val ordered = outbox.encodedCarousel(nowMillis)
         if (ordered.isEmpty()) return emptyList()
         if (slots >= ordered.size) return ordered
@@ -425,6 +647,8 @@ class MeshNode(
 
             outbox.purgeStale(now)
             seen.purgeExpired(now)
+            reconsider.purgeExpired(now)
+            cancelled.purgeExpired(now)
 
             // Only on change: retuning the radio is not free, and the tier is stable for long
             // stretches. Without this guard it would fire on every loop iteration.
@@ -470,8 +694,7 @@ class MeshNode(
      * the loop wakes on a fixed grid whose phase is set by whenever the node happened to start.
      * If that grid never lands inside the window, the node never scans -- not rarely, *never*.
      * Concretely, a FLARE node (2s interval) that starts 1.2s into an epoch has wake times at
-     * 1.2s, 3.2s, 5.2s ... and every one of them misses [0s, 1s). It stays permanently deaf
-     * while reporting itself perfectly healthy.
+     * 1.2s, 3.2s, 5.2s ... and every one of them misses [0s, 1s).
      *
      * The simulator cannot catch this: `World.tick()` steps a fixed 250ms, which always samples
      * the window. It is a hardware-only failure, which is exactly the kind worth designing out
@@ -618,6 +841,14 @@ class MeshNode(
         const val ATTENTIVE_AFTER_SOS_MILLIS = 120_000L
 
         /**
+         * How long an own-originated SAFE keeps broadcasting before being reclaimed. Matches
+         * [SeenSet.DEFAULT_EXPIRY_MILLIS]: once peers' seen-sets have had time to absorb the
+         * SAFE, continuing to advertise it wastes airtime and — worse — [Outbox.carouselOrder]
+         * sorts isOwn first, so it outranks live SOS beacons the entire time.
+         */
+        const val OWN_SAFE_BROADCAST_MILLIS = SeenSet.DEFAULT_EXPIRY_MILLIS
+
+        /**
          * How long a direct signal reading stays meaningful. Short: people and phones move, and
          * a two-minute-old RSSI is not proximity, it is history.
          */
@@ -626,6 +857,23 @@ class MeshNode(
         /** RSSI swings several dB frame to frame; this damps it without hiding real movement. */
         const val RSSI_EMA_ALPHA = 0.3
 
+        /**
+         * How many times a lost [SuppressReason.PROBABILISTIC] roll gets reconsidered before
+         * [onBeaconHeard] leaves it alone. Bounded rather than unlimited: [densityDamp] pulls the
+         * probability down as [neighboursHoldingCopy]-style redundancy rises, so each extra
+         * attempt is already worth less than the last -- three tries is enough to catch the
+         * common case (a couple of unlucky rolls in a thin neighbourhood) without letting a
+         * message that *keeps* losing become a standing source of re-evaluation for the rest of
+         * its 10-minute [SeenSet] window.
+         */
+        const val MAX_RECONSIDER_ATTEMPTS = 3
+
+        /**
+         * Ring buffer size for [recentForwardingDecisions]. 32 is enough to cover several
+         * beacon-carousel rotations' worth of activity -- what a field tester actually reads this
+         * for -- without holding meaningfully more than that in memory.
+         */
+        const val FORWARDING_HISTORY_CAPACITY = 32
     }
 }
 

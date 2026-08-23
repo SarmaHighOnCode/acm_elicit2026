@@ -63,6 +63,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import com.setu.mesh.app.gateway.SosSummary
 import com.setu.mesh.app.service.SelfFix
 import com.setu.mesh.app.service.SetuService
+import com.setu.mesh.app.service.TransmittedPosition
 import com.setu.mesh.app.ui.components.StatusLadder
 import com.setu.mesh.app.ui.components.TierBadge
 import com.setu.mesh.app.ui.components.formatSelfFixLine
@@ -120,9 +121,16 @@ fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
     // Polled rather than pushed for the same reason MeshViewModel polls carriedMessages(): the
     // fix has no flow of its own, only a getter, so a timer is what makes "3 s ago" keep counting.
     var selfFix by remember { mutableStateOf<SelfFix?>(null) }
+    // Same reasoning, same poll: what's actually on the wire has no flow of its own either, and
+    // this is the one line on the screen that can tell a victim their SOS is carrying a fix from
+    // minutes ago even while the line above it honestly reports a fresh one.
+    var transmitted by remember { mutableStateOf<TransmittedPosition?>(null) }
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
             selfFix = SetuService.selfFix()
+            transmitted = SetuService.transmittedOwnPosition()
+            nowMillis = System.currentTimeMillis()
             delay(SELF_FIX_POLL_INTERVAL_MILLIS)
         }
     }
@@ -154,6 +162,7 @@ fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Header(snapshot = snapshot, onDeveloperEntry = onDeveloperEntry)
                 SelfFixLine(selfFix)
+                TransmittedPositionLine(transmitted, nowMillis)
 
                 if (isShort) {
                     Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
@@ -451,6 +460,44 @@ private fun SelfFixLine(selfFix: SelfFix?) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 20.dp),
     )
+}
+
+/**
+ * What the mesh actually carries right now for this node's own SOS, shown beside -- never
+ * merged into -- [SelfFixLine]. The gap between the two lines is the field-test bug this task
+ * exists to fix: the sender's own screen could honestly read "±10 m · 2s ago" while the beacon
+ * still on air carried a fix accepted minutes earlier, and until now nothing made that gap
+ * visible to the person relying on it. Nothing shown here while there is no outstanding SOS --
+ * an accuracy class for a message that was never sent would be a fabrication, not a status.
+ */
+@Composable
+private fun TransmittedPositionLine(transmitted: TransmittedPosition?, nowMillis: Long) {
+    if (transmitted == null) return
+    Text(
+        text = formatTransmittedPositionLine(transmitted, nowMillis),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 20.dp),
+    )
+}
+
+/**
+ * Real values only, matching [formatSelfFixLine]'s honesty rule: an unknown accuracy class reads
+ * as "accuracy unknown", never a plausible-looking number, and the refresh clause only appears
+ * once a refresh has actually fired.
+ */
+private fun formatTransmittedPositionLine(transmitted: TransmittedPosition, nowMillis: Long): String {
+    val accuracyText = when (transmitted.accuracyClass) {
+        1 -> "±10 m"
+        2 -> "±30 m"
+        3 -> "±100 m"
+        else -> "accuracy unknown"
+    }
+    val refreshSuffix = transmitted.lastRefreshAtMillis?.let { refreshedAt ->
+        val minutesAgo = ((nowMillis - refreshedAt) / 60_000L).coerceAtLeast(0)
+        " · position updated ${minutesAgo}m ago"
+    } ?: ""
+    return "Carried by mesh: $accuracyText$refreshSuffix"
 }
 
 /**

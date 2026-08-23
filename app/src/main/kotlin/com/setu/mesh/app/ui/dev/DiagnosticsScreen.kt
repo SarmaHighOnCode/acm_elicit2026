@@ -74,6 +74,12 @@ fun DiagnosticsScreen() {
             RadioStatus()
             Spacer(Modifier.height(24.dp))
 
+            PositionDiagnostics()
+            Spacer(Modifier.height(24.dp))
+
+            RelayDiagnostics()
+            Spacer(Modifier.height(24.dp))
+
             MeshControls()
             Spacer(Modifier.height(24.dp))
             GatewaySmsControls()

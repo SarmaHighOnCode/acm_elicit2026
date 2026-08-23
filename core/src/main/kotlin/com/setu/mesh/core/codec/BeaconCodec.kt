@@ -14,7 +14,7 @@ import com.setu.mesh.core.model.SosBeacon
  *
  * ```
  *  off size field       notes
- *   0    1  verType     3b version | 3b type | 2b reserved
+ *   0    1  verType     3b version | 3b type | 2b posClass (0 unknown, 1 ≤10m, 2 ≤30m, 3 ≤100m)
  *   1    1  ttlHops     4b ttl     | 4b hops
  *   2    4  msgId       dedup key
  *   6    3  originId    24-bit node id
@@ -35,7 +35,8 @@ object BeaconCodec {
     fun encode(beacon: SosBeacon): ByteArray {
         val out = ByteArray(SosBeacon.SIZE)
 
-        out[0] = (((SETU_VERSION and 0b111) shl 5) or ((beacon.type.wire and 0b111) shl 2)).toByte()
+        val posClass = beacon.positionAccuracyClass.coerceIn(0, 3)
+        out[0] = (((SETU_VERSION and 0b111) shl 5) or ((beacon.type.wire and 0b111) shl 2) or posClass).toByte()
         out[1] = (((beacon.ttl.coerceIn(0, 15)) shl 4) or beacon.hops.coerceIn(0, 15)).toByte()
 
         putInt32(out, 2, beacon.messageId.raw)
@@ -76,6 +77,14 @@ object BeaconCodec {
             flags = SituationFlags.fromWire(bytes[20].toInt() and 0xFF),
             souls = bytes[21].toInt() and 0xFF,
             originBattery = bytes[22].toInt() and 0xFF,
+            // Bits [1:0] of byte 0. Backward compatible in both directions: a pre-this-change
+            // build never sets these bits, so its beacons decode here as class 0 (unknown), which
+            // is the honest answer since those builds never measured accuracy either. A beacon
+            // from a new build decodes fine on an old build too -- the old decode only ever reads
+            // (verType ushr 5) for version and (verType ushr 2) and 0b111 for type, so bits [1:0]
+            // are simply never looked at there. Version stays 1 either way; nothing about the
+            // layout above byte 0 moved.
+            positionAccuracyClass = verType and 0b11,
         )
     }
 

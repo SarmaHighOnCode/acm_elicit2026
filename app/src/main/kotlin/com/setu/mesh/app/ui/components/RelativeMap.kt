@@ -26,16 +26,21 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.setu.mesh.app.service.SelfFix
+import com.setu.mesh.app.ui.PositionConfidence
+import com.setu.mesh.app.ui.formatPositionConfidenceLine
+import com.setu.mesh.app.ui.positionConfidence
+import com.setu.mesh.app.ui.sigmaMetresOrNull
 import com.setu.mesh.app.ui.theme.LocalIsDarkTheme
+import com.setu.mesh.core.geo.relativeOffsetMetres
 import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SosBeacon
 import kotlin.math.atan2
-import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.cos
 
 /**
  * Own device at centre, known SOS positions plotted around it by real bearing and distance.
@@ -48,9 +53,16 @@ import kotlin.math.sin
  * rather than dropped, with a small ring marking the clamp -- a report from 400 m away is still
  * worth showing as "that direction, far", not silently discarded.
  *
+ * Every plotted beacon also gets an **uncertainty disc** (radius = its combined 1-sigma error,
+ * see [com.setu.mesh.app.ui.positionConfidence]) at ~25% alpha under its marker. This is the
+ * honest rendering of what a three-phone field test showed: two decent GPS fixes a few metres
+ * apart produce a bearing that can genuinely point anywhere across a wide cone, and a solid dot
+ * drawn over that is a lie by omission. When two discs overlap, "we cannot tell you which
+ * direction" becomes visible without reading a single number.
+ *
  * The map is a compass: up is wherever [self]'s device is currently pointing, not north, via
- * [rememberTrueHeadingDegrees]. On hardware with no usable rotation sensor that call returns
- * null, and the map stays north-up -- labelled as such, never silently wrong.
+ * [rememberHeadingReading]. On hardware with no usable rotation sensor that call returns a null
+ * heading, and the map stays north-up -- labelled as such, never silently wrong.
  */
 @Composable
 fun RelativeMap(
@@ -59,13 +71,21 @@ fun RelativeMap(
     onTapBeacon: (SosBeacon) -> Unit,
     nowMillis: Long,
     selfFix: SelfFix?,
-    degraded: Boolean,
     modifier: Modifier = Modifier,
 ) {
     var selected by remember { mutableStateOf<SosBeacon?>(null) }
-    val plotted = remember(self, beacons) { beacons.map { it to relativeOffsetMetres(self, it.position) } }
+    val plotted = remember(self, beacons, selfFix, nowMillis) {
+        beacons.map { beacon ->
+            PlottedBeacon(
+                beacon = beacon,
+                offsetMetres = relativeOffsetMetres(self, beacon.position),
+                confidence = positionConfidence(selfFix, beacon, nowMillis),
+            )
+        }
+    }
     val maxRangeMetres = remember(plotted) { autoRangeMetres(plotted) }
-    val headingDegrees = rememberTrueHeadingDegrees(self)
+    val headingReading = rememberHeadingReading(self)
+    val heading = headingReading.degrees ?: 0f
     val isDark = LocalIsDarkTheme.current
     // In dark mode, overlay colours are white-tinted; in light mode, dark-tinted for contrast.
     val overlayColor = if (isDark) Color.White else Color(0xFF1A1A1A)
@@ -82,21 +102,20 @@ fun RelativeMap(
                     .align(Alignment.Center)
                     .size(squareSize)
                     .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
-                    .pointerInput(plotted, maxRangeMetres, headingDegrees) {
+                    .pointerInput(plotted, maxRangeMetres, headingReading.degrees) {
                         detectTapGestures { tap ->
                             val scale = min(size.width, size.height) / 2f / maxRangeMetres.toFloat()
                             val centre = Offset(size.width / 2f, size.height / 2f)
-                            val heading = headingDegrees ?: 0f
-                            val hit = plotted.minByOrNull { (_, offset) ->
-                                val p = plotPoint(offset, maxRangeMetres, centre, scale, heading)
+                            val hit = plotted.minByOrNull { candidate ->
+                                val p = plotPoint(candidate.offsetMetres, maxRangeMetres, centre, scale, heading)
                                 (p.x - tap.x) * (p.x - tap.x) + (p.y - tap.y) * (p.y - tap.y)
                             }
                             if (hit != null) {
-                                val p = plotPoint(hit.second, maxRangeMetres, centre, scale, heading)
+                                val p = plotPoint(hit.offsetMetres, maxRangeMetres, centre, scale, heading)
                                 val distSq = (p.x - tap.x) * (p.x - tap.x) + (p.y - tap.y) * (p.y - tap.y)
                                 if (distSq <= TAP_RADIUS_PX * TAP_RADIUS_PX) {
-                                    selected = hit.first
-                                    onTapBeacon(hit.first)
+                                    selected = hit.beacon
+                                    onTapBeacon(hit.beacon)
                                 }
                             }
                         }
@@ -104,7 +123,6 @@ fun RelativeMap(
             ) {
                 val centre = Offset(size.width / 2f, size.height / 2f)
                 val scale = min(size.width, size.height) / 2f / maxRangeMetres.toFloat()
-                val heading = headingDegrees ?: 0f
 
                 // Distance rings at thirds of the display range, each labelled in metres. Rings
                 // and their labels are rotation-invariant by construction: a circle centred on
@@ -141,7 +159,7 @@ fun RelativeMap(
                         textSize = 28f
                     },
                 )
-                if (headingDegrees != null) {
+                if (headingReading.degrees != null) {
                     // Up is always where the phone points once we have a real heading, so the
                     // cone is a fixed upward wedge -- it never rotates itself, the map rotates
                     // around it. Drawn only when the heading is real: a fake "facing" indicator
@@ -168,11 +186,40 @@ fun RelativeMap(
                 drawCircle(color = overlayColor, radius = 8f, center = centre)
                 drawCircle(color = overlayColor.copy(alpha = 0.25f), radius = 16f, center = centre)
 
-                plotted.forEach { (beacon, offset) ->
-                    val point = plotPoint(offset, maxRangeMetres, centre, scale, heading)
-                    val clamped = hypot(offset.first, offset.second) > maxRangeMetres
-                    val color = severityColor(beacon.flags.severity)
-                    drawCircle(color = color, radius = if (beacon == selected) 12f else 8f, center = point)
+                plotted.forEach { candidate ->
+                    val point = plotPoint(candidate.offsetMetres, maxRangeMetres, centre, scale, heading)
+                    val clamped = hypot(candidate.offsetMetres.first, candidate.offsetMetres.second) > maxRangeMetres
+                    val color = severityColor(candidate.beacon.flags.severity)
+                    val isSelected = candidate.beacon == selected
+
+                    // The uncertainty disc: the single most important addition here. Radius is
+                    // the real combined 1-sigma error, never invented -- skipped entirely when
+                    // that figure isn't known (self fix or sender accuracy missing) rather than
+                    // drawn at some plausible-looking default size.
+                    candidate.confidence.sigmaMetresOrNull?.let { sigmaMetres ->
+                        val discRadiusPx = (sigmaMetres * scale).toFloat()
+                        if (discRadiusPx > 0f) {
+                            drawCircle(color = color.copy(alpha = 0.25f), radius = discRadiusPx, center = point)
+                        }
+                    }
+
+                    when (candidate.confidence) {
+                        is PositionConfidence.Confident -> {
+                            // Direction and distance both check out: the one case that earns a
+                            // solid, full-opacity marker.
+                            drawCircle(color = color, radius = if (isSelected) 12f else 8f, center = point)
+                        }
+                        is PositionConfidence.Approximate -> {
+                            // Distance is real; direction is not confident enough to emphasise --
+                            // a muted, smaller marker rather than the solid dot above.
+                            drawCircle(color = color.copy(alpha = 0.6f), radius = if (isSelected) 8f else 5f, center = point)
+                        }
+                        is PositionConfidence.Unusable -> {
+                            // No solid marker implying a precise point or direction -- the disc
+                            // above (when a sigma is known at all) is the whole honest story.
+                            drawCircle(color = color.copy(alpha = 0.4f), radius = if (isSelected) 6f else 4f, center = point)
+                        }
+                    }
                     if (clamped) {
                         // A short ring around the clamped point marking "further than shown"
                         // rather than silently placing it on the boundary unlabelled.
@@ -183,21 +230,42 @@ fun RelativeMap(
         }
 
         selected?.let { beacon ->
-            val distanceMetres = distanceMetres(self, beacon.position)
+            val confidence = positionConfidence(selfFix, beacon, nowMillis)
+            val peopleWord = if (beacon.souls == 1) "person" else "people"
             Text(
-                text = "${beacon.souls} people, ${distanceMetres.roundToInt()}m away",
+                text = buildString {
+                    append("${beacon.souls} $peopleWord")
+                    formatPositionConfidenceLine(confidence)?.let { append(", $it") }
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Medium,
             )
-        }
-
-        if (headingDegrees == null) {
             Text(
-                text = "North up",
-                style = MaterialTheme.typography.labelLarge,
+                text = formatSenderAccuracyLine(beacon),
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        when {
+            headingReading.degrees == null -> {
+                Text(
+                    text = "North up",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            headingReading.needsCalibration -> {
+                // An uncalibrated magnetometer used to draw a confidently wrong arrow with no
+                // warning at all -- this is the fix, surfacing the sensor's own accuracy status
+                // that was previously read and discarded (onAccuracyChanged was a no-op).
+                Text(
+                    text = "Compass needs calibration — move the phone in a figure 8",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         // Real values only, or an honest statement that there is nothing to show -- a
@@ -207,15 +275,16 @@ fun RelativeMap(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (degraded) {
-            Text(
-                text = "Position accuracy is poor; bearings are approximate.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
     }
 }
+
+/** One beacon plus its screen-space offset and trust band, computed once per composition tick
+ *  and shared between drawing, hit-testing and auto-ranging so none of the three can drift. */
+private data class PlottedBeacon(
+    val beacon: SosBeacon,
+    val offsetMetres: Pair<Double, Double>,
+    val confidence: PositionConfidence,
+)
 
 /**
  * The single transform shared by drawing and hit-testing. It used to be duplicated (`toScreenPoint`
@@ -258,9 +327,15 @@ private fun bearingToScreen(bearingDegrees: Float, headingDegrees: Float, centre
  * a 120 m circle regardless of how close it actually was. Snapped up to a human-readable step so
  * the ring labels are round numbers, with a 25 m floor so a single very-close report doesn't zoom
  * in to an unreadable few metres.
+ *
+ * Accounts for each beacon's uncertainty disc too (distance + its sigma, when known): a large
+ * disc clipped off the edge of the canvas would defeat the entire point of drawing it.
  */
-private fun autoRangeMetres(plotted: List<Pair<SosBeacon, Pair<Double, Double>>>): Double {
-    val furthestMetres = plotted.maxOfOrNull { (_, offset) -> hypot(offset.first, offset.second) } ?: 0.0
+private fun autoRangeMetres(plotted: List<PlottedBeacon>): Double {
+    val furthestMetres = plotted.maxOfOrNull { candidate ->
+        val distance = hypot(candidate.offsetMetres.first, candidate.offsetMetres.second)
+        distance + (candidate.confidence.sigmaMetresOrNull ?: 0.0)
+    } ?: 0.0
     return RANGE_STEPS_METRES.firstOrNull { it >= furthestMetres } ?: RANGE_STEPS_METRES.last()
 }
 
@@ -272,48 +347,27 @@ internal fun formatSelfFixLine(selfFix: SelfFix?, nowMillis: Long): String {
     return "Your fix: $accuracy · ${ageSeconds}s ago · ${providerLabel(selfFix.provider)}"
 }
 
+/**
+ * The sender's own reported fix quality for the selected beacon, matching docs/PROTOCOL.md §2's
+ * class boundaries exactly -- the same wording SosScreen uses for this node's own outgoing
+ * beacon (`formatTransmittedPositionLine`), so a responder and a victim read the same phrase for
+ * the same underlying figure.
+ */
+private fun formatSenderAccuracyLine(beacon: SosBeacon): String {
+    val accuracyText = when (beacon.positionAccuracyClass) {
+        1 -> "≤10 m"
+        2 -> "≤30 m"
+        3 -> "≤100 m"
+        else -> "unknown"
+    }
+    return "Their fix: $accuracyText (reported)"
+}
+
 private fun providerLabel(provider: String): String = when (provider.lowercase()) {
     "gps" -> "GPS"
     "network" -> "Network"
     else -> provider
 }
-
-/**
- * Equirectangular offset in metres: (east, north). Correct to well under a metre at BLE range,
- * which is all the precision this display needs or the GPS fix itself can actually support.
- */
-private fun relativeOffsetMetres(self: GeoPoint, other: GeoPoint): Pair<Double, Double> {
-    val metresPerDegreeLat = 111_320.0
-    val metresPerDegreeLon = 111_320.0 * cos(Math.toRadians(self.latitude))
-    val dx = (other.longitude - self.longitude) * metresPerDegreeLon
-    val dy = (other.latitude - self.latitude) * metresPerDegreeLat
-    return dx to dy
-}
-
-/** Straight-line distance in metres, via the same projection as [relativeOffsetMetres]. */
-internal fun distanceMetres(self: GeoPoint, other: GeoPoint): Double {
-    val (dx, dy) = relativeOffsetMetres(self, other)
-    return hypot(dx, dy)
-}
-
-/** True bearing in degrees [0, 360) from [self] to [other]. */
-internal fun bearingDegrees(self: GeoPoint, other: GeoPoint): Float {
-    val (dx, dy) = relativeOffsetMetres(self, other)
-    val degrees = Math.toDegrees(atan2(dx, dy)).toFloat()
-    return (degrees + 360f) % 360f
-}
-
-/** 16-point compass label for a bearing in degrees. */
-internal fun compassPoint(degrees: Float): String {
-    val normalized = ((degrees % 360f) + 360f) % 360f
-    val index = (normalized / 22.5f).roundToInt() % COMPASS_POINTS.size
-    return COMPASS_POINTS[index]
-}
-
-private val COMPASS_POINTS = listOf(
-    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
-)
 
 private fun severityColor(severity: Severity): Color = when (severity) {
     Severity.CRITICAL -> Color(0xFFEF5350)

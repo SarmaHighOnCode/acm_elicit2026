@@ -11,6 +11,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.BatteryManager
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -84,7 +85,10 @@ class AndroidNodeHost(context: Context) : NodeHost {
 
     override fun isCharging(): Boolean = cachedCharging
 
-    override fun position(): GeoPoint? = currentFix?.point
+    // RC1: a fix this old is not a position any more. Without this, position() kept returning
+    // whatever currentFix last held indefinitely -- including a fix accepted minutes before a
+    // GPS outage -- and that stale point went straight onto the wire as the SOS location.
+    override fun position(): GeoPoint? = liveFix()?.point
 
     /**
      * The full fix behind [position]: accuracy, age and provider, for the responder map's
@@ -92,7 +96,26 @@ class AndroidNodeHost(context: Context) : NodeHost {
      * `:core` and must not grow a field for a display concern that `:core` never needs, so this
      * lives at the app layer instead.
      */
-    fun lastFix(): SelfFix? = currentFix
+    fun lastFix(): SelfFix? = liveFix()
+
+    /**
+     * [currentFix] itself, or null once it has aged past [MAX_FIX_AGE_MILLIS] -- the honest
+     * answer for "what is our position right now" is nothing, not a stale point. Age is measured
+     * against [SystemClock.elapsedRealtime], never wall-clock time; see the class doc on
+     * [SelfFix.elapsedRealtimeMillis] for why.
+     */
+    private fun liveFix(): SelfFix? {
+        val fix = currentFix ?: return null
+        val ageMillis = SystemClock.elapsedRealtime() - fix.elapsedRealtimeMillis
+        return if (ageMillis > MAX_FIX_AGE_MILLIS) null else fix
+    }
+
+    /**
+     * Accuracy class of whatever [liveFix] currently holds, per docs/PROTOCOL.md §2. Falls back
+     * to unknown (0) both when there is no fix and when the platform reported no accuracy figure
+     * for the one we have -- an unmeasured fix is not evidence of a good one.
+     */
+    override fun positionAccuracyClass(): Int = accuracyClassFor(liveFix()?.accuracyMetres)
 
     /**
      * Approximated via `Settings.Global.AUTO_TIME`: true when the device is set to sync its
@@ -134,14 +157,37 @@ class AndroidNodeHost(context: Context) : NodeHost {
     private fun isDebuggable(): Boolean =
         (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
-    /** Adopts [location] if [isBetterFix] says it beats whatever [currentFix] already holds. */
+    /**
+     * Adopts [location] if [isBetterFix] says it beats whatever [currentFix] already holds.
+     * Logged either way -- accepted or rejected -- so field testing can see the arbitration
+     * actually happen instead of only ever observing its outcome.
+     */
     private fun onLocation(location: Location) {
-        if (!isBetterFix(location, currentFix)) return
+        val nowElapsedRealtimeMillis = SystemClock.elapsedRealtime()
+        val candidateAccuracy = if (location.hasAccuracy()) location.accuracy else null
+        val candidateElapsedRealtimeMillis = location.elapsedRealtimeMillis()
+        val candidateAgeMillis = nowElapsedRealtimeMillis - candidateElapsedRealtimeMillis
+
+        if (!isBetterFix(location, currentFix, nowElapsedRealtimeMillis)) {
+            Log.d(
+                TAG,
+                "Rejected fix: provider=${location.provider} accuracy=${candidateAccuracy}m " +
+                    "age=${candidateAgeMillis}ms held=$currentFix",
+            )
+            return
+        }
+
         currentFix = SelfFix(
             point = GeoPoint.of(location.latitude, location.longitude),
-            accuracyMetres = if (location.hasAccuracy()) location.accuracy else null,
+            accuracyMetres = candidateAccuracy,
             atMillis = location.time,
+            elapsedRealtimeMillis = candidateElapsedRealtimeMillis,
             provider = location.provider ?: "unknown",
+        )
+        Log.d(
+            TAG,
+            "Accepted fix: provider=${location.provider} accuracy=${candidateAccuracy}m " +
+                "age=${candidateAgeMillis}ms",
         )
     }
 
@@ -198,7 +244,10 @@ class AndroidNodeHost(context: Context) : NodeHost {
                 null
             } ?: continue
 
-            val ageMillis = nowMillis() - existing.time
+            // elapsedRealtime, not existing.time: a seed's wall-clock timestamp is exactly as
+            // vulnerable to clock skew as any other fix's, and this gate is the first line of
+            // defence against adopting an hours-old, wrong-part-of-the-city seed at startup.
+            val ageMillis = SystemClock.elapsedRealtime() - existing.elapsedRealtimeMillis()
             if (ageMillis > MAX_SEED_FIX_AGE_MILLIS) {
                 // A silently discarded seed is confusing during bring-up ("why is the map
                 // empty/wrong") -- log it loudly rather than just dropping it.
@@ -233,7 +282,24 @@ class AndroidNodeHost(context: Context) : NodeHost {
         /** Older than this, a `getLastKnownLocation` seed is worse than no seed at all. */
         private const val MAX_SEED_FIX_AGE_MILLIS = 5 * 60_000L
 
-        /** Below this age gap, two fixes are "about the same age" rather than one outdating the other. */
+        /**
+         * Past this age, `currentFix` is not a position any more -- see [liveFix]. This is the
+         * fix for RC1: without an expiry, a fix accepted minutes before a GPS outage sat in
+         * `currentFix` forever and kept being broadcast as the SOS location, honestly labelled
+         * "±10 m" on the sender's own screen while actually describing somewhere the person no
+         * longer was.
+         */
+        private const val MAX_FIX_AGE_MILLIS = 5 * 60_000L
+
+        /**
+         * Absolute floor, independent of everything else in [isBetterFix]. RC3: with no such
+         * floor, a 70-second GPS dropout outdoors let a ±2000 m cell fix win outright under the
+         * "significantly newer" rule below and become `currentFix` -- and then get broadcast as
+         * the SOS position. Nothing this coarse is worth adopting regardless of age or what we
+         * currently hold.
+         */
+        private const val MAX_USABLE_ACCURACY_METRES = 200f
+
         /** Past this, whatever we hold is too old to defend against a coarser but fresh fix. */
         private const val STALE_FIX_MILLIS = 60_000L
 
@@ -248,23 +314,47 @@ class AndroidNodeHost(context: Context) : NodeHost {
          * two fixes of comparable age, the more accurate one wins; and a same-provider fix that
          * is not meaningfully worse than the current one also wins, which prevents NETWORK and
          * GPS flip-flopping against each other on every tick once both are live.
+         *
+         * All age math here runs on [nowElapsedRealtimeMillis] and [SelfFix.elapsedRealtimeMillis]
+         * -- never [Location.getTime] or [SelfFix.atMillis] -- because [Location.getTime] is a
+         * wall-clock timestamp that a provider can report skewed relative to
+         * `System.currentTimeMillis()`, which corrupts every comparison built on it.
+         * `elapsedRealtimeNanos` is monotonic and immune to that.
          */
-        private fun isBetterFix(candidate: Location, current: SelfFix?): Boolean {
-            if (current == null) return true
+        private fun isBetterFix(candidate: Location, current: SelfFix?, nowElapsedRealtimeMillis: Long): Boolean {
             val candidateAccuracy = if (candidate.hasAccuracy()) candidate.accuracy else null
-            val ageDeltaMillis = candidate.time - current.atMillis
+
+            // RC3's missing absolute floor. Unconditional: no age or current-fix comparison below
+            // can ever be a reason to accept a fix this coarse.
+            if (candidateAccuracy != null && candidateAccuracy > MAX_USABLE_ACCURACY_METRES) return false
+
+            if (current == null) return true
+
+            // An accuracy-less candidate carries no evidence it is any good, and must never
+            // displace a fix we know the quality of, however old that fix's accuracy figure is.
+            if (candidateAccuracy == null && current.accuracyMetres != null) return false
+
+            val candidateElapsedRealtimeMillis = candidate.elapsedRealtimeMillis()
+            val ageDeltaMillis = candidateElapsedRealtimeMillis - current.elapsedRealtimeMillis
+            // "Is what we hold still fresh right now" -- not "was the candidate only a little
+            // newer than it". The old test compared the candidate/current age *delta* against
+            // STALE_FIX_MILLIS, which is a claim about relative ordering, not about whether the
+            // held fix has actually gone stale by now; this is the freshness test its own comment
+            // always claimed to be.
+            val currentFreshnessMillis = nowElapsedRealtimeMillis - current.elapsedRealtimeMillis
+
             return when {
                 ageDeltaMillis < -SIGNIFICANT_TIME_DELTA_MILLIS -> false
                 // A significantly newer fix usually wins: the user may simply have moved, and
                 // there is no way to tell a stale-but-precise fix from a correct one. But not
-                // when it is drastically coarser and what we hold is still fresh. Indoors, GPS
-                // goes quiet while NETWORK fixes keep arriving every second, and without this
-                // guard a +-150 m cell fix repeatedly stomps a +-8 m GPS fix that is only half
-                // a minute old -- which is exactly what makes the displayed accuracy flap
-                // between +-100 m and +-200 m on a phone sitting still on a desk.
+                // when it is drastically coarser and what we hold is still fresh right now.
+                // Indoors, GPS goes quiet while NETWORK fixes keep arriving every second, and
+                // without this guard a +-150 m cell fix repeatedly stomps a +-8 m GPS fix that is
+                // only half a minute old -- which is exactly what makes the displayed accuracy
+                // flap between +-100 m and +-200 m on a phone sitting still on a desk.
                 ageDeltaMillis > SIGNIFICANT_TIME_DELTA_MILLIS ->
                     !(isDrasticallyWorse(candidateAccuracy, current.accuracyMetres) &&
-                        ageDeltaMillis < STALE_FIX_MILLIS)
+                        currentFreshnessMillis < STALE_FIX_MILLIS)
                 candidateAccuracy == null -> false
                 current.accuracyMetres == null -> true
                 candidateAccuracy < current.accuracyMetres -> true
@@ -278,6 +368,18 @@ class AndroidNodeHost(context: Context) : NodeHost {
             if (candidateMetres == null) return true
             if (currentMetres == null) return false
             return candidateMetres > currentMetres * DRASTIC_ACCURACY_RATIO
+        }
+
+        /** [Location.getElapsedRealtimeNanos] in the same unit every other age comparison uses. */
+        private fun Location.elapsedRealtimeMillis(): Long = elapsedRealtimeNanos / 1_000_000L
+
+        /** Maps a raw accuracy figure to a wire `positionAccuracyClass` value per docs/PROTOCOL.md §2. */
+        private fun accuracyClassFor(accuracyMetres: Float?): Int = when {
+            accuracyMetres == null -> 0
+            accuracyMetres <= 10f -> 1
+            accuracyMetres <= 30f -> 2
+            accuracyMetres <= 100f -> 3
+            else -> 0
         }
     }
 }
@@ -296,6 +398,15 @@ data class SelfFix(
      * would claim a perfect fix for a reading that carries no quality information whatsoever.
      */
     val accuracyMetres: Float?,
+    /** Display-only wall-clock timestamp ("3 s ago"). Never compare two of these for freshness --
+     *  see [elapsedRealtimeMillis]. */
     val atMillis: Long,
+    /**
+     * [Location.getElapsedRealtimeNanos] in milliseconds: the monotonic clock every age
+     * comparison in [AndroidNodeHost] is built on. `atMillis`/`Location.getTime()` is wall-clock
+     * and a provider can report it skewed relative to `System.currentTimeMillis()`, which
+     * corrupts age math built on it -- this field exists so nothing here has to trust that clock.
+     */
+    val elapsedRealtimeMillis: Long,
     val provider: String,
 )
