@@ -439,7 +439,12 @@ class SetuService : LifecycleService() {
         const val CHANNEL_ID = "setu_relay"
         const val NOTIFICATION_ID = 1
 
-        const val SOS_ALERT_CHANNEL_ID = "setu_sos_alert"
+        // "_v2": NotificationChannel sound/vibration is locked in permanently on first creation
+        // per channel id, per device -- a later app update cannot alter it. Any phone that had
+        // an earlier build installed (even one missing setSound entirely) is stuck silent on
+        // "setu_sos_alert" forever. Bumping the id forces Android to create a fresh channel with
+        // the correct sound. Do this again if channel config ever changes post-install.
+        const val SOS_ALERT_CHANNEL_ID = "setu_sos_alert_v2"
 
         /** Offset from [NOTIFICATION_ID] so a stack of SOS alerts never collides with it. */
         private const val SOS_ALERT_NOTIFICATION_ID_BASE = 1_000
