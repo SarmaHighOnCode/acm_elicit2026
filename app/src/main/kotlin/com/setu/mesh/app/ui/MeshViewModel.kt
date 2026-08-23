@@ -5,9 +5,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.setu.mesh.app.service.SelfFix
 import com.setu.mesh.app.service.SetuService
+import com.setu.mesh.core.geo.BearingConfidenceBand
+import com.setu.mesh.core.geo.bearingConfidenceBand
+import com.setu.mesh.core.geo.bearingDegrees
+import com.setu.mesh.core.geo.bearingUncertaintyDegrees
+import com.setu.mesh.core.geo.compassPoint
+import com.setu.mesh.core.geo.distanceMetres
 import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.MessageType
 import com.setu.mesh.core.model.SosBeacon
+import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /**
  * Polls [SetuService.carriedMessages] rather than collecting a flow: `MeshNode` has no
@@ -109,20 +117,112 @@ fun collapseByOrigin(beacons: List<SosBeacon>): List<SosBeacon> =
         }
 
 /**
- * True when the self fix is too old or too imprecise to support a meaningful bearing. Two
- * phones 5 m apart, each with a ±10 m fix, cannot produce a real direction to each other --
- * that is physics, not a bug, and both [com.setu.mesh.app.ui.components.RelativeMap] and
- * [com.setu.mesh.app.ui.components.SosCard] use this to say so instead of showing a confident
- * -looking number the fix cannot actually support.
+ * How much a responder should trust the bearing/distance shown for one beacon.
+ *
+ * Replaces the old self-only, boolean `isSelfFixDegraded`: that flag knew only the receiver's
+ * own fix quality and nothing about the sender's, and nothing about how far apart the two
+ * devices actually are (RC2). Two ±10 m fixes 15 m apart produce a bearing whose 1-sigma
+ * uncertainty is ~43 degrees (see [bearingUncertaintyDegrees]) -- past 90 degrees at 2-sigma,
+ * which reads to a user as "flipped" even though nothing is broken. That is physics, not a
+ * defect; the actual bug was drawing a confident dot over it regardless.
+ *
+ * Three bands rather than a boolean because "the number is fine" and "there is no number" are
+ * not the only two honest states: a report a few metres away can have a perfectly good distance
+ * figure while its direction is genuine noise.
  */
-fun isSelfFixDegraded(selfFix: SelfFix?, nowMillis: Long): Boolean {
-    if (selfFix == null) return true
+sealed class PositionConfidence {
+    /** sigma_bearing <= 20 degrees: cardinal direction and distance are both worth showing. */
+    data class Confident(val distanceMetres: Double, val sigmaMetres: Double, val compassPoint: String) :
+        PositionConfidence()
+
+    /** 20-50 degrees: distance is still worth showing; a direction claim is not. */
+    data class Approximate(val distanceMetres: Double, val sigmaMetres: Double) : PositionConfidence()
+
+    /**
+     * More than 50 degrees, or the sender's accuracy class is unknown, or the self fix is
+     * null/stale. [distanceMetres] and [sigmaMetres] are still populated whenever a distance
+     * figure could be computed at all (self fix present and beacon position known) -- only the
+     * direction claim is withheld, never the distance itself.
+     */
+    data class Unusable(val distanceMetres: Double?, val sigmaMetres: Double?) : PositionConfidence()
+}
+
+/**
+ * Computes [PositionConfidence] for one beacon from the receiver's own fix and the sender's
+ * reported accuracy class ([SosBeacon.senderAccuracyMetres], carried on the wire since it was
+ * added to two previously-reserved bits of byte 0). Pure function of its three arguments -- no
+ * hidden clock reads beyond [nowMillis] -- so it is at least reviewable end to end in this one
+ * place even though `:app` has no test source set to verify it in directly; the angle maths it
+ * calls into ([bearingUncertaintyDegrees], [bearingConfidenceBand], [bearingDegrees],
+ * [compassPoint]) lives in `:core`'s `Geo.kt` and is covered by `GeoTest`.
+ */
+fun positionConfidence(selfFix: SelfFix?, beacon: SosBeacon, nowMillis: Long): PositionConfidence {
+    if (selfFix == null || beacon.position == GeoPoint.UNKNOWN) {
+        return PositionConfidence.Unusable(distanceMetres = null, sigmaMetres = null)
+    }
+
+    val distance = distanceMetres(selfFix.point, beacon.position)
+    val selfAccuracy = selfFix.accuracyMetres?.toDouble()
+    val senderAccuracy = beacon.senderAccuracyMetres
+    // Android's Location.getAccuracy() is a 68% (~1-sigma) radius, so two independent fixes
+    // combine in quadrature -- see bearingUncertaintyDegrees' doc for the geometry.
+    val sigmaMetres = if (selfAccuracy != null && senderAccuracy != null) hypot(selfAccuracy, senderAccuracy) else null
+
+    // A fix can be precise and still far too old -- the age gate that used to be
+    // isSelfFixDegraded's other input folds in here instead of living beside this function as a
+    // second source of truth for "can we trust this fix".
     val ageMillis = nowMillis - selfFix.atMillis
-    // Unknown accuracy is treated as degraded: a fix that carries no quality information is
-    // not evidence of a good one.
-    val accuracy = selfFix.accuracyMetres ?: return true
-    return accuracy > DEGRADED_ACCURACY_THRESHOLD_METRES ||
-        ageMillis > DEGRADED_AGE_THRESHOLD_MILLIS
+    val stale = ageMillis > DEGRADED_AGE_THRESHOLD_MILLIS
+
+    if (sigmaMetres == null || stale) {
+        return PositionConfidence.Unusable(distance, sigmaMetres)
+    }
+
+    val sigmaDegrees = bearingUncertaintyDegrees(sigmaMetres, distance)
+    return when (bearingConfidenceBand(sigmaDegrees)) {
+        BearingConfidenceBand.CONFIDENT -> PositionConfidence.Confident(
+            distanceMetres = distance,
+            sigmaMetres = sigmaMetres,
+            compassPoint = compassPoint(bearingDegrees(selfFix.point, beacon.position)),
+        )
+        BearingConfidenceBand.APPROXIMATE -> PositionConfidence.Approximate(distance, sigmaMetres)
+        BearingConfidenceBand.UNUSABLE -> PositionConfidence.Unusable(distance, sigmaMetres)
+    }
+}
+
+/**
+ * The combined 1-sigma figure behind any [PositionConfidence], when one exists -- one place that
+ * knows which variant carries it, shared by [com.setu.mesh.app.ui.components.RelativeMap]'s
+ * uncertainty disc and its auto-range calculation.
+ */
+val PositionConfidence.sigmaMetresOrNull: Double?
+    get() = when (this) {
+        is PositionConfidence.Confident -> sigmaMetres
+        is PositionConfidence.Approximate -> sigmaMetres
+        is PositionConfidence.Unusable -> sigmaMetres
+    }
+
+/**
+ * The exact three-band card text from this task's spec table, shared by
+ * [com.setu.mesh.app.ui.components.SosCard] and [com.setu.mesh.app.ui.components.RelativeMap]'s
+ * selected-beacon panel so the wording has one home. Null only for [PositionConfidence.Unusable]
+ * with no distance at all -- no self fix, or the beacon's own position unknown -- where there is
+ * honestly nothing to show.
+ */
+fun formatPositionConfidenceLine(confidence: PositionConfidence): String? = when (confidence) {
+    is PositionConfidence.Confident ->
+        "${confidence.compassPoint} · ${confidence.distanceMetres.roundToInt()} m ±${confidence.sigmaMetres.roundToInt()} m"
+    is PositionConfidence.Approximate ->
+        "~${confidence.distanceMetres.roundToInt()} m ±${confidence.sigmaMetres.roundToInt()} m · direction approximate"
+    is PositionConfidence.Unusable -> {
+        val distance = confidence.distanceMetres
+        if (distance == null) {
+            null
+        } else {
+            val sigmaSuffix = confidence.sigmaMetres?.let { " ±${it.roundToInt()} m" } ?: ""
+            "within ~${distance.roundToInt()} m$sigmaSuffix"
+        }
+    }
 }
 
 /**
@@ -147,5 +247,5 @@ fun proximityLabel(signalDbm: Int?): String? = when {
     else -> "far"
 }
 
-private const val DEGRADED_ACCURACY_THRESHOLD_METRES = 30f
+/** Past this age, a self fix is not fresh enough to support a bearing claim -- see [positionConfidence]. */
 private const val DEGRADED_AGE_THRESHOLD_MILLIS = 60_000L
