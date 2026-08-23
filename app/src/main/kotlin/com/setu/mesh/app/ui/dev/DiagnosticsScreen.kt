@@ -216,6 +216,57 @@ private fun GatewaySmsControls() {
             color = MaterialTheme.colorScheme.error,
         )
     }
+
+    Spacer(Modifier.height(8.dp))
+    UplinkStatus()
+}
+
+/**
+ * Live readout of what UplinkMonitor is actually seeing, so the stage demo can prove which
+ * phone is eligible before it matters: put every victim phone in airplane mode and this is the
+ * one line that shows the gateway phone still has a way out. Null (mesh not running, or gateway
+ * mode off) is rendered as its own state rather than folded into "no uplink" -- those are two
+ * different reasons for the same red text and only one of them means "this won't work".
+ */
+@Composable
+private fun UplinkStatus() {
+    var hasInternet by remember { mutableStateOf<Boolean?>(null) }
+    var hasCellService by remember { mutableStateOf<Boolean?>(null) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            hasInternet = SetuService.hasInternet()
+            hasCellService = SetuService.hasCellService()
+            delay(RADIO_STATUS_REFRESH_MILLIS)
+        }
+    }
+
+    Text(
+        text = "Uplink (live)",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = when {
+            hasInternet == null && hasCellService == null ->
+                "Not a gateway right now -- enable gateway mode and start the mesh."
+            else -> "Internet (WhatsApp): ${uplinkLabel(hasInternet)} · " +
+                "Cell service (SMS): ${uplinkLabel(hasCellService)}"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = if (hasInternet == true || hasCellService == true) {
+            MaterialTheme.colorScheme.tertiary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+    )
+}
+
+private fun uplinkLabel(value: Boolean?): String = when (value) {
+    true -> "yes"
+    false -> "no"
+    null -> "n/a"
 }
 
 /**

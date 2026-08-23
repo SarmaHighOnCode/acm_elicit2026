@@ -26,6 +26,10 @@
     <!-- Only requested/used when a node enables Gateway Mode (see GatewaySettings) -->
     <uses-permission android:name="android.permission.SEND_SMS" />
 
+    <!-- Normal permission: lets UplinkMonitor ask ConnectivityManager whether this phone
+         actually has validated internet, instead of trusting a settings toggle. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- Normal permission (no runtime prompt needed): buzz on newly observed SOS -->
     <uses-permission android:name="android.permission.VIBRATE" />
 

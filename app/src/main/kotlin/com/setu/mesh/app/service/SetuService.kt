@@ -26,6 +26,7 @@ import com.setu.mesh.app.ble.BleAdvertiser
 import com.setu.mesh.app.ble.BleScanner
 import com.setu.mesh.app.data.GatewaySettings
 import com.setu.mesh.app.data.NodeIdentity
+import com.setu.mesh.app.gateway.UplinkMonitor
 import com.setu.mesh.core.engine.GatewayRole
 import com.setu.mesh.core.engine.MeshNode
 import com.setu.mesh.core.engine.NodeSnapshot
@@ -40,6 +41,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -73,6 +75,10 @@ class SetuService : LifecycleService() {
     private var meshJob: Job? = null
     private var notificationJob: Job? = null
     private var snapshotJob: Job? = null
+
+    /** Only non-null while this node is running as a gateway. See [UplinkMonitor]. */
+    private var uplinkMonitor: UplinkMonitor? = null
+    private var uplinkJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -185,9 +191,31 @@ class SetuService : LifecycleService() {
             if (number.isBlank()) {
                 Log.w(TAG_MESH, "Gateway mode enabled but no phone number set -- not attaching")
             } else {
-                node.gatewayRole = GatewayRole(node).apply { onUplinkAvailable(true) }
+                val role = GatewayRole(node)
+                node.gatewayRole = role
                 node.onGatewayAlert = { beacon -> sendGatewaySms(number, beacon) }
                 Log.i(TAG_MESH, "Gateway mode active -> $number")
+
+                // uplinkAvailable used to be hardcoded true the moment gateway mode was
+                // switched on, which never actually checked whether this phone had a way out.
+                // UplinkMonitor tracks real network/cellular state and this recombines it on
+                // every change, not just once here at mesh start -- the classic demo relies on
+                // exactly one phone being out of airplane mode, and that fact can change
+                // mid-demo. See UplinkMonitor's kdoc for why internet and cell service are
+                // tracked as two independent capabilities rather than one boolean.
+                val monitor = UplinkMonitor(this).also { it.start() }
+                uplinkMonitor = monitor
+                uplinkJob = scope.launch {
+                    combine(monitor.hasInternet, monitor.hasCellService) { internet, cell -> internet || cell }
+                        .collect { available ->
+                            role.onUplinkAvailable(available)
+                            Log.i(
+                                TAG_MESH,
+                                "Uplink: internet=${monitor.hasInternet.value} " +
+                                    "cell=${monitor.hasCellService.value} -> available=$available",
+                            )
+                        }
+                }
             }
         }
 
@@ -241,6 +269,10 @@ class SetuService : LifecycleService() {
         notificationJob = null
         snapshotJob?.cancel()
         snapshotJob = null
+        uplinkJob?.cancel()
+        uplinkJob = null
+        uplinkMonitor?.stop()
+        uplinkMonitor = null
         val link = androidLink
         androidLink = null
         androidNodeHost?.shutdown()
@@ -565,6 +597,14 @@ class SetuService : LifecycleService() {
         /** Everything this node is currently carrying, for the responder view. Empty if not running. */
         fun carriedMessages(): List<com.setu.mesh.core.model.SosBeacon> =
             runningInstance?.meshNode?.carriedMessages() ?: emptyList()
+
+        /**
+         * Live uplink state for the Diagnostics gateway section -- null when this node is not
+         * currently acting as a gateway (mesh not running, or gateway mode off), which the UI
+         * must render as "not applicable", never as "no uplink". See [UplinkMonitor].
+         */
+        fun hasInternet(): Boolean? = runningInstance?.uplinkMonitor?.hasInternet?.value
+        fun hasCellService(): Boolean? = runningInstance?.uplinkMonitor?.hasCellService?.value
 
         /**
          * This device's own last fix, accuracy and age included, for the responder map's footer
