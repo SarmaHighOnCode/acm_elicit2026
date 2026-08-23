@@ -36,6 +36,14 @@
     <!-- Hard requirement: BLE is the only transport -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!-- Android 11+ package visibility: without this, GatewayDispatcher's package-installed
+         check for WhatsApp/WhatsApp Business always sees "not installed" and every alert falls
+         back to a browser even on a phone that has WhatsApp. -->
+    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
