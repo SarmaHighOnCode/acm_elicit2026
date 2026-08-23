@@ -108,6 +108,18 @@ class MeshNode(
      */
     var onGatewayAlert: ((SosBeacon) -> Unit)? = null
 
+    /**
+     * Fires once per distinct SOS this node newly observes and is not the origin of -- i.e. the
+     * moment a relay first picks up a stranger's emergency, not when our own SOS echoes back.
+     * Gated on the same dedup check as [onGatewayAlert], so a re-heard/re-relayed copy of a
+     * message already seen never fires this twice.
+     *
+     * This is a UX hook, not a protocol concern: `core` has no idea it exists to trigger a
+     * buzz/sound/notification, only that "a new emergency just became known to this device" is
+     * a moment worth telling the transport layer about.
+     */
+    var onSosObserved: ((SosBeacon) -> Unit)? = null
+
     // ---------------------------------------------------------------- origination
 
     /**
@@ -240,6 +252,11 @@ class MeshNode(
                 if (role.acceptDelivery(beacon.messageId, nowMillis) != null) {
                     onGatewayAlert?.invoke(beacon)
                 }
+            }
+            // Not our own SOS echoing back -- that case is already surfaced via ownSosMaxHops
+            // above and would be a false "new emergency" alert on every hop it travels.
+            if (beacon.origin != id) {
+                onSosObserved?.invoke(beacon)
             }
         }
 

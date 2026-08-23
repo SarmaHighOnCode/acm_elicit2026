@@ -26,6 +26,9 @@
     <!-- Only requested/used when a node enables Gateway Mode (see GatewaySettings) -->
     <uses-permission android:name="android.permission.SEND_SMS" />
 
+    <!-- Normal permission (no runtime prompt needed): buzz on newly observed SOS -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- Hard requirement: BLE is the only transport -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 

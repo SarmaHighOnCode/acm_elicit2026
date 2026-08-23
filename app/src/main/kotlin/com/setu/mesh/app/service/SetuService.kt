@@ -7,7 +7,12 @@ import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.ScanSettings
 import android.telephony.SmsManager
@@ -72,6 +77,7 @@ class SetuService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
+        ensureSosAlertChannel()
         runningInstance = this
     }
 
@@ -184,6 +190,8 @@ class SetuService : LifecycleService() {
                 Log.i(TAG_MESH, "Gateway mode active -> $number")
             }
         }
+
+        node.onSosObserved = { beacon -> notifySosHeard(beacon) }
 
         androidNodeHost = host
         androidLink = link
@@ -331,6 +339,72 @@ class SetuService : LifecycleService() {
     }
 
     /**
+     * A second, separate channel from [CHANNEL_ID]: the persistent relay notification is
+     * deliberately IMPORTANCE_LOW (silent, no heads-up -- it would be an embarrassing battery
+     * cost and an annoyance to churn on every protocol tick). A newly observed SOS is the
+     * opposite case: it must interrupt, so it gets its own IMPORTANCE_HIGH channel with sound
+     * and vibration attached. Two channels because Android channel importance is fixed at
+     * creation and cannot be raised later except by the user in system settings.
+     */
+    private fun ensureSosAlertChannel() {
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        val channel = NotificationChannel(
+            SOS_ALERT_CHANNEL_ID,
+            "SOS relayed nearby",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "Alerts when this phone first picks up someone else's emergency"
+            enableVibration(true)
+            vibrationPattern = SOS_VIBRATION_PATTERN
+            setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), attributes)
+        }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(channel)
+    }
+
+    /**
+     * Fires once per distinct SOS this node newly relays (see [MeshNode.onSosObserved]): a
+     * heads-up notification plus an explicit [Vibrator] call. The explicit vibrate is
+     * belt-and-suspenders -- channel-driven vibration can be silently overridden by the user in
+     * system settings, and this is the one moment in the whole app meant to be felt, not just
+     * seen, so it does not rely on channel config alone.
+     */
+    private fun notifySosHeard(beacon: SosBeacon) {
+        vibrate()
+
+        val text = "${beacon.flags.severity} · ${beacon.souls} " +
+            (if (beacon.souls == 1) "person" else "people") +
+            " · ${beacon.hops} hop(s) away"
+
+        val notification = Notification.Builder(this, SOS_ALERT_CHANNEL_ID)
+            .setContentTitle("SOS relayed nearby")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setCategory(Notification.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .build()
+
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        // messageId folded into the id so distinct SOS alerts stack instead of overwriting each
+        // other, and never collides with the persistent relay notification at NOTIFICATION_ID.
+        val notificationId = SOS_ALERT_NOTIFICATION_ID_BASE + (beacon.messageId.raw and 0xFFFF)
+        manager.notify(notificationId, notification)
+    }
+
+    private fun vibrate() {
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (getSystemService(VibratorManager::class.java))?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Vibrator::class.java)
+        } ?: return
+        vibrator.vibrate(VibrationEffect.createWaveform(SOS_VIBRATION_PATTERN, -1))
+    }
+
+    /**
      * With no [snapshot] yet (service just started, mesh not brought up) this is the generic
      * "relay active" text from strings.xml. Once the mesh is running it shows
      * "SafeHop · RELAY — carrying 3 · 5 nearby", matching `docs/tasks/B5-node-host-and-service.md`.
@@ -352,6 +426,14 @@ class SetuService : LifecycleService() {
     companion object {
         const val CHANNEL_ID = "setu_relay"
         const val NOTIFICATION_ID = 1
+
+        const val SOS_ALERT_CHANNEL_ID = "setu_sos_alert"
+
+        /** Offset from [NOTIFICATION_ID] so a stack of SOS alerts never collides with it. */
+        private const val SOS_ALERT_NOTIFICATION_ID_BASE = 1_000
+
+        /** Two short buzzes, not one -- distinguishable by feel from a plain incoming-message tap. */
+        private val SOS_VIBRATION_PATTERN = longArrayOf(0L, 250L, 150L, 250L)
 
         // ---- B2 scaffolding: replaced in B5 by MeshNode.beaconsToAdvertise() ----
 
