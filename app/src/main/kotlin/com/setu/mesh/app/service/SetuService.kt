@@ -341,8 +341,13 @@ class SetuService : LifecycleService() {
      * creation and cannot be raised later except by the user in system settings.
      */
     private fun ensureSosAlertChannel() {
+        // USAGE_NOTIFICATION_EVENT, not USAGE_ALARM: ALARM routes to the phone's alarm volume
+        // stream, which is separate from notification/media volume and is very commonly left
+        // low or muted on a phone nobody thought to check before a demo. NOTIFICATION_EVENT
+        // follows the notification volume, which is the stream people actually expect a "your
+        // phone just made a sound" alert to use.
         val attributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
         val channel = NotificationChannel(
@@ -353,7 +358,7 @@ class SetuService : LifecycleService() {
             description = "Alerts when this phone first picks up someone else's emergency"
             enableVibration(true)
             vibrationPattern = SOS_VIBRATION_PATTERN
-            setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), attributes)
+            setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), attributes)
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
@@ -379,13 +384,15 @@ class SetuService : LifecycleService() {
 
     /**
      * Fires once per distinct SOS this node newly relays (see [MeshNode.onSosObserved]): a
-     * heads-up notification plus an explicit [Vibrator] call. The explicit vibrate is
-     * belt-and-suspenders -- channel-driven vibration can be silently overridden by the user in
-     * system settings, and this is the one moment in the whole app meant to be felt, not just
-     * seen, so it does not rely on channel config alone.
+     * heads-up notification plus an explicit [Vibrator] call and an explicit [Ringtone] play.
+     * Both are belt-and-suspenders -- channel-driven sound/vibration can be silently suppressed
+     * (user settings, or some OEM skins muting background-service notification sound regardless
+     * of channel config), and this is the one moment in the whole app meant to be felt and heard,
+     * not just seen, so it does not rely on channel config alone.
      */
     private fun notifySosHeard(beacon: SosBeacon) {
         vibrate()
+        playAlertSound()
 
         val text = "${beacon.flags.severity} · ${beacon.souls} " +
             (if (beacon.souls == 1) "person" else "people") +
@@ -417,6 +424,21 @@ class SetuService : LifecycleService() {
     }
 
     /**
+     * Plays the default notification sound directly, independent of whether the
+     * [SOS_ALERT_CHANNEL_ID] channel's own sound actually fires. `Ringtone.play()` opens its own
+     * short-lived audio focus on the notification stream, so it works from a background service
+     * the same way a stock alarm clock's sound does.
+     */
+    private fun playAlertSound() {
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) ?: return
+        try {
+            RingtoneManager.getRingtone(this, uri)?.play()
+        } catch (e: Exception) {
+            Log.w(TAG_MESH, "Could not play SOS alert sound", e)
+        }
+    }
+
+    /**
      * With no [snapshot] yet (service just started, mesh not brought up) this is the generic
      * "relay active" text from strings.xml. Once the mesh is running it shows
      * "SafeHop · RELAY — carrying 3 · 5 nearby", matching `docs/tasks/B5-node-host-and-service.md`.
@@ -439,12 +461,12 @@ class SetuService : LifecycleService() {
         const val CHANNEL_ID = "setu_relay"
         const val NOTIFICATION_ID = 1
 
-        // "_v2": NotificationChannel sound/vibration is locked in permanently on first creation
-        // per channel id, per device -- a later app update cannot alter it. Any phone that had
-        // an earlier build installed (even one missing setSound entirely) is stuck silent on
-        // "setu_sos_alert" forever. Bumping the id forces Android to create a fresh channel with
-        // the correct sound. Do this again if channel config ever changes post-install.
-        const val SOS_ALERT_CHANNEL_ID = "setu_sos_alert_v2"
+        // "_v3": NotificationChannel sound/vibration/audio-attributes are locked in permanently
+        // on first creation per channel id, per device -- a later app update cannot alter them.
+        // Bump this suffix any time this channel's sound/vibration config changes, or phones
+        // that already have an earlier version installed stay stuck on the old (broken) config
+        // forever, no matter what the code now says.
+        const val SOS_ALERT_CHANNEL_ID = "setu_sos_alert_v3"
 
         /** Offset from [NOTIFICATION_ID] so a stack of SOS alerts never collides with it. */
         private const val SOS_ALERT_NOTIFICATION_ID_BASE = 1_000
