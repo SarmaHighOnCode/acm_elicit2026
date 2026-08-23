@@ -173,6 +173,83 @@ class BeaconCodecTest {
     }
 
     @Test
+    fun `every posClass value round-trips`() {
+        for (posClass in 0..3) {
+            val beacon = SosBeacon(
+                type = MessageType.SOS,
+                ttl = 7,
+                hops = 0,
+                messageId = MessageId(1),
+                origin = NodeId(1),
+                position = GeoPoint.of(10.0, 20.0),
+                epochMinute = 100,
+                flags = SituationFlags(),
+                souls = 1,
+                originBattery = 100,
+                positionAccuracyClass = posClass,
+            )
+            val decoded = BeaconCodec.decode(BeaconCodec.encode(beacon))
+            assertNotNull(decoded)
+            assertEquals(posClass, decoded!!.positionAccuracyClass, "posClass=$posClass did not round-trip")
+        }
+    }
+
+    @Test
+    fun `a beacon encoded with reserved bits zeroed decodes as class 0`() {
+        // Simulates a pre-this-change build: it never sets bits [1:0] of byte 0, so they stay
+        // whatever encode() would have produced for positionAccuracyClass = 0. A receiver on the
+        // new decode must read that as "unknown", the honest answer for a sender that never
+        // measured accuracy at all -- not crash, not guess, not treat it as some other class.
+        val beacon = SosBeacon(
+            type = MessageType.SOS,
+            ttl = 7,
+            hops = 0,
+            messageId = MessageId(1),
+            origin = NodeId(1),
+            position = GeoPoint.of(10.0, 20.0),
+            epochMinute = 100,
+            flags = SituationFlags(),
+            souls = 1,
+            originBattery = 100,
+            positionAccuracyClass = 0,
+        )
+        val encoded = BeaconCodec.encode(beacon)
+        assertEquals(0, encoded[0].toInt() and 0b11, "reserved bits should be zero for posClass 0")
+
+        val decoded = BeaconCodec.decode(encoded)
+        assertNotNull(decoded)
+        assertEquals(0, decoded!!.positionAccuracyClass)
+        assertNull(decoded.senderAccuracyMetres)
+    }
+
+    @Test
+    fun `posClass is covered by the CRC and corruption is still detected`() {
+        // Byte 0 carries posClass in its low two bits and was already covered by the CRC before
+        // this change (CRC spans bytes 0..22 unconditionally) -- this asserts that remains true
+        // now that those bits carry real information instead of always being zero.
+        val beacon = SosBeacon(
+            type = MessageType.SOS,
+            ttl = 7,
+            hops = 0,
+            messageId = MessageId(1),
+            origin = NodeId(1),
+            position = GeoPoint.of(10.0, 20.0),
+            epochMinute = 100,
+            flags = SituationFlags(),
+            souls = 1,
+            originBattery = 100,
+            positionAccuracyClass = 2,
+        )
+        val encoded = BeaconCodec.encode(beacon)
+        assertNotNull(BeaconCodec.decode(encoded))
+
+        // Flip only the posClass bits, leaving the CRC byte untouched -- this must now fail CRC.
+        val corrupted = encoded.copyOf()
+        corrupted[0] = (corrupted[0].toInt() xor 0b11).toByte()
+        assertNull(BeaconCodec.decode(corrupted))
+    }
+
+    @Test
     fun `wrong version returns null`() {
         val beacon = SosBeacon(
             type = MessageType.SOS,

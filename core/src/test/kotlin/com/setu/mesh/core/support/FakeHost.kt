@@ -9,14 +9,17 @@ class FakeHost(
     var battery: Int = 100,
     var charging: Boolean = false,
     var location: GeoPoint? = GeoPoint(0, 0),
-    var trustedClock: Boolean = true
+    var trustedClock: Boolean = true,
+    /** 0..3 per docs/PROTOCOL.md §2. Defaults to 0 (unknown), same as [NodeHost]'s default body. */
+    var accuracyClass: Int = 0,
 ) : NodeHost {
     override fun nowMillis(): Long = currentTimeMillis
     override fun batteryPercent(): Int = battery
     override fun isCharging(): Boolean = charging
     override fun position(): GeoPoint? = location
     override fun hasTrustedClock(): Boolean = trustedClock
-    
+    override fun positionAccuracyClass(): Int = accuracyClass
+
     fun advanceTime(millis: Long) {
         currentTimeMillis += millis
     }

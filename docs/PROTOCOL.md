@@ -31,7 +31,8 @@ SafeHop keeps working on a phone that cannot afford anything else.
 ```
  off size field      bits / encoding
  ─────────────────────────────────────────────────────────────────────
-  0    1   verType    [7:5] version=1  [4:2] type  [1:0] reserved
+  0    1   verType    [7:5] version=1  [4:2] type  [1:0] posClass
+                      posClass: 0 unknown/no fix/>100m · 1 ≤10m · 2 ≤30m · 3 ≤100m
   1    1   ttlHops    [7:4] ttl 0..15  [3:0] hops 0..15
   2    4   msgId      uint32, dedup key
   6    3   originId   uint24, node id
@@ -62,6 +63,17 @@ election (§7). Best value-per-byte in the protocol.
 
 **`crc8`** — not a security control; an attacker recomputes it trivially. It exists to reject
 frames garbled by a noisy 2.4 GHz band before they reach routing.
+
+**`posClass`** — two bits riding for free in byte 0's previously-reserved space, and the cheapest
+fix available for a real bug: `lat`/`lon` carry no quality signal at all, so a receiver cannot
+tell a fix taken a second ago from one accepted minutes before a GPS outage and never refreshed.
+Two bits cannot carry a metre figure, but they do not need to — a coarse bucket (≤10 m / ≤30 m /
+≤100 m / worse-or-unknown) is enough for a responder to size an uncertainty circle instead of
+trusting a point that might be tens of metres from where the sender actually is. `version` stays
+`1`: an old build simply never sets these bits, which decodes as class 0 (unknown) on any
+receiver — the honest answer, since that build never measured accuracy either — and a new build's
+beacon decodes cleanly on an old one, because the old decode never looks at bits [1:0] in the
+first place. Zero-byte cost, both directions compatible.
 
 ### Truncated identifiers are a deliberate trade
 
@@ -137,8 +149,17 @@ you may not be able to. Energy-optimal and ethically right at the same time.
 `msgId`. No extra traffic.
 
 Every decision returns a `RelayDecision` carrying its reason (`ENERGY_GATE`,
-`ALTRUISM_GRADIENT`, `DENSITY_DAMPED`, `PROBABILISTIC`, `TTL_EXHAUSTED`), so the Mesh Lab can
-show *why* a node stayed quiet.
+`ALTRUISM_GRADIENT`, `DENSITY_DAMPED`, `PROBABILISTIC`, `TTL_EXHAUSTED`), so the Mesh Lab and a
+field tester's diagnostics screen can both show *why* a node stayed quiet.
+
+Two more reasons exist on the wire engine's side of `MeshNode.onBeaconHeard`, not inside
+`ForwardingPolicy.decide` itself: `MALFORMED` (bad CRC or an unknown version — the frame never
+reached the policy at all) and `DUPLICATE` (a repeat hearing of a message this node already has a
+terminal answer for). Both used to be invisible in exactly the same way a lost `PROBABILISTIC`
+roll was — nothing happened, and there was no way to tell any of them apart. A field test that
+found phone b never getting a relay phone a heard cleanly is what surfaced that gap: see §6 for
+the fix on the `PROBABILISTIC` side, which is the one that actually changes protocol behaviour
+rather than just labelling it.
 
 ## 6. Deduplication
 
@@ -152,6 +173,64 @@ information rather than silently swallowed.
 Without dedup, a controlled flood is just a broadcast storm — three nodes in mutual range relay
 the same beacon to each other until their batteries are flat. Dedup is not an optimisation; it is
 what stops the protocol destroying the network it runs on.
+
+### A lost dice roll used to be permanent, and that was a bug, not dedup working as intended
+
+For a MODERATE beacon whose originator has more battery than the receiver, §5's product of gates
+can land as low as `0.6 × 1.0 × 0.25 × 1.0 ≈ 0.09` — roughly one relay attempt in eleven. Losing
+that roll is expected; the old bug was what losing it *cost*. `SeenSet.addIfNew` ran before
+`ForwardingPolicy.decide` and was the entire forwarding gate: the instant a message was marked
+seen, it was marked seen for good, so a `Suppress(PROBABILISTIC)` outcome ended that message's
+life on this node for the rest of the 10-minute window — no matter how many more times a neighbour
+re-advertised it in the meantime. A three-phone field test caught this directly: phone c sent an
+SOS, phone a heard it and lost its roll, and phone b never got the relay, even though the radio
+link was fine (b could hear a's *own* SOS from the same spot).
+
+The fix keeps dedup's actual job intact — a genuine duplicate's *side effects* (the free clock
+sample, carrier count, and RSSI reading `onBeaconHeard` extracts from every hearing regardless of
+outcome) are still applied exactly once per hearing, never per roll — but separates "seen" from
+"decided". A beacon suppressed for `PROBABILISTIC` is kept in a second, smaller bounded table (64
+entries, same 10-minute expiry as `SeenSet` — the same reason to bound it applies at a smaller
+scale, since only messages that actually lost their roll ever land here) recording how many times
+it has been reconsidered. Hearing it again while under `MAX_RECONSIDER_ATTEMPTS = 3` re-runs
+`ForwardingPolicy.decide` against the **current** context rather than the one from whenever it was
+first heard.
+
+**What this costs, and why it is bounded rather than free.** Each reconsideration is one more call
+to `ForwardingPolicy.decide` — no extra radio traffic by itself, since it only runs when a beacon
+is heard anyway — but it can turn a suppression into a relay that would not otherwise have
+happened, which *is* an extra beacon on air. Two things keep that cost from compounding:
+
+- **`densityDamp` shrinks the probability exactly as the reason to retry goes away.** Every extra
+  hearing that makes reconsideration possible is, by construction, evidence that `k` (distinct
+  carriers already re-advertising this id) is rising. A higher `k` pushes `densityDamp` down for
+  the *very same retry* that rising `k` enabled. A message that keeps getting reconsidered is
+  therefore a message whose relay probability is falling each time — the retry is self-limiting,
+  not multiplicative, and cannot turn one lost roll into a storm of relays.
+- **`MAX_RECONSIDER_ATTEMPTS = 3` caps the airtime any single lost roll can cost**, independent of
+  how many more times the same message happens to be heard inside its 10-minute window. Three
+  tries is enough to catch the common case — a couple of unlucky rolls in a thin neighbourhood,
+  the exact shape of the field-test failure — without a message that keeps losing becoming a
+  standing source of re-evaluation for the rest of its lifetime in `SeenSet`.
+
+In a dense mesh where the same beacon is heard from many neighbours in quick succession, the
+practical cost is small: `k` climbs fast, so `densityDamp` usually drives the probability toward
+zero well before the third attempt, and most reconsiderations after the first one or two either
+relay (because they were always going to, eventually) or stop being retried at all once `k` alone
+would suppress them outright.
+
+**`TTL_EXHAUSTED` and `ENERGY_GATE` stay terminal — deliberately, not as an oversight.** Neither
+is reconsidered, ever. `TTL_EXHAUSTED` reflects the hop budget of the specific path this hearing
+travelled; a shorter path might still bring a relayable copy later, but that arrives as a fresh
+hearing with its own `ttl`, not as a retry of this one. `ENERGY_GATE` is the load-bearing one: it
+is what lets a phone below the relay floor keep behaving exactly as `docs/POWER.md`'s low-battery
+survival story describes. Reconsidering it would mean a phone at 3% re-evaluating whether to spend
+its last milliamps on someone else's message every time that message crossed its radio again —
+precisely the outcome the gate exists to prevent. `PROBABILISTIC` is safe to retry because losing
+it is not a statement about whether this node *can* relay, only about whether this particular roll
+said so; `ENERGY_GATE` and `TTL_EXHAUSTED` are statements that would not change on a retry, so
+retrying them would only cost a CPU cycle to reach the same answer, plus, for the energy gate, the
+risk of implementing that re-check sloppily enough to spend battery a phone that low cannot spare.
 
 ## 7. Shared clock
 

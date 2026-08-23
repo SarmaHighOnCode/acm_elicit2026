@@ -24,8 +24,40 @@ enum class SuppressReason {
     /** Enough neighbours are already carrying this copy. */
     DENSITY_DAMPED,
 
-    /** Passed every gate, lost the probabilistic roll. */
+    /**
+     * Passed every gate, lost the probabilistic roll. The one reconsiderable outcome: see
+     * `MeshNode.onBeaconHeard` — a message suppressed for this reason gets up to
+     * `MAX_RECONSIDER_ATTEMPTS` fresh rolls against the current context before it is left alone.
+     */
     PROBABILISTIC,
+
+    /**
+     * Not a [ForwardingPolicy] outcome at all — the frame failed CRC or carried a version this
+     * node does not understand, so `BeaconCodec.decode` returned null before the policy ever ran.
+     * Distinct from [PROBABILISTIC] so a field tester can tell "the radio handed us garbage" from
+     * "the dice roll came up wrong": both used to look identical on the wire that mattered
+     * (nothing happened), which is exactly the invisibility RC4 was about.
+     */
+    MALFORMED,
+
+    /**
+     * A repeat hearing of a message this node already has a terminal answer for: already
+     * relayed, already given a terminal [TTL_EXHAUSTED]/[ENERGY_GATE] verdict, or its
+     * [PROBABILISTIC] reconsideration budget is spent. The policy did not run again — there is
+     * nothing left to decide, only something to log so the beacon's arrival is not invisible.
+     */
+    DUPLICATE,
+
+    /**
+     * A RECEIPT or SAFE for this SOS's id was already heard — or, when this node is the one who
+     * marked themselves safe, originated — so the situation it reports is over. Decided in
+     * `MeshNode.onBeaconHeard` against its `CancelledSet`, not in this object: by the time
+     * [decide] would run, the question is already answered, the same way [MALFORMED] and
+     * [DUPLICATE] are settled before the policy is ever consulted. See `docs/PROTOCOL.md` §6 for
+     * why a cancelled id needs its own, much longer-lived bounded memory rather than folding into
+     * `SeenSet`'s reconsideration path.
+     */
+    CANCELLED,
 }
 
 /** Everything the policy needs that is not in the beacon itself. */

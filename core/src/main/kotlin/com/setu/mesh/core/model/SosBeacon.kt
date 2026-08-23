@@ -34,8 +34,30 @@ data class SosBeacon(
      * traffic at all because every node can already see its neighbours' energy.
      */
     val originBattery: Int,
+    /**
+     * Accuracy class of [position], 0..3, packed into the two reserved bits of wire byte 0.
+     * See docs/PROTOCOL.md §2 for the class boundaries. Defaults to 0 (unknown) so every
+     * construction site that predates this field -- test fixtures, `:sim`, and the RECEIPT/SAFE
+     * originators in [com.setu.mesh.core.engine.MeshNode] that were written before it existed --
+     * keeps compiling without having to fabricate a quality figure it does not have.
+     */
+    val positionAccuracyClass: Int = 0,
 ) {
     val isCritical: Boolean get() = flags.severity == Severity.CRITICAL
+
+    /**
+     * What [positionAccuracyClass] actually claims about [position], in metres, or `null` when
+     * the sender reported no fix at all or one worse than 100 m. This is the field the responder
+     * side reads to size an uncertainty circle around a reported position instead of trusting a
+     * point that may have been frozen minutes before it was sent -- see docs/PROTOCOL.md §2.
+     */
+    val senderAccuracyMetres: Double?
+        get() = when (positionAccuracyClass) {
+            1 -> 10.0
+            2 -> 30.0
+            3 -> 100.0
+            else -> null
+        }
 
     /** Age in whole minutes against a wall-clock instant. */
     fun ageMinutes(nowMillis: Long): Int {
