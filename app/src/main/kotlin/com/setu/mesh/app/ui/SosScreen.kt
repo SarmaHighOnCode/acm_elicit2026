@@ -46,6 +46,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.setu.mesh.app.service.SelfFix
@@ -500,7 +501,9 @@ private fun TriageControls(
                     label = {
                         Text(
                             text = value.name.lowercase(Locale.US).replaceFirstChar { it.uppercase() },
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     },
                     modifier = Modifier
@@ -545,7 +548,9 @@ private fun TriageControls(
 
     NeumorphicSection {
         ToggleRow("Trapped", trapped, onTrapped)
+        Spacer(Modifier.height(8.dp))
         ToggleRow("Medical need", medicalNeed, onMedical)
+        Spacer(Modifier.height(8.dp))
         ToggleRow("Water rising", waterRising, onWater)
     }
 }
@@ -595,6 +600,7 @@ private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
             .height(56.dp)
             .neumorphic(cornerRadius = 12.dp, elevation = 4.dp, pressed = pressed)
             .clickable(interactionSource = interactionSource, indication = null, onClick = onToggle)
+            .padding(horizontal = 12.dp)
             .semantics { contentDescription = "$label, ${if (checked) "on" else "off"}" },
         verticalAlignment = Alignment.CenterVertically,
     ) {
