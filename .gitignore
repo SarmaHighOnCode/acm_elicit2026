@@ -19,5 +19,8 @@ _private/
 /.agents/skills/lavish
 /.claude/skills/lavish
 
+# Firebase Hosting cache
+.firebase/
+
 # Kotlin JVM module build output (Eclipse-style layout used by :core and :sim).
 bin/

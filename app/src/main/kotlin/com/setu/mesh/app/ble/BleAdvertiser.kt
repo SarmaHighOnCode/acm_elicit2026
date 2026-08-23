@@ -64,6 +64,15 @@ class BleAdvertiser(
     val supportsExtendedAdvertising: Boolean
         get() = adapter?.isLeExtendedAdvertisingSupported == true
 
+    private val _settingsInEffect = MutableStateFlow<AdvertiseSettings?>(null)
+
+    /**
+     * What the radio actually accepted, as reported by `onStartSuccess` -- not what we asked
+     * for. The controller is free to give you something other than you requested, and the
+     * difference is exactly what you want to see when a range test disappoints.
+     */
+    val settingsInEffect: StateFlow<AdvertiseSettings?> = _settingsInEffect.asStateFlow()
+
     private val _lastFailure = MutableStateFlow<AdvertiseFailure?>(null)
 
     /**
@@ -250,6 +259,7 @@ class BleAdvertiser(
     private inner class BeaconCallback(private val beacon: ByteArray) : AdvertiseCallback() {
 
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            _settingsInEffect.value = settingsInEffect
             Log.i(
                 TAG,
                 "Advertising ${beacon.toHex()} " +

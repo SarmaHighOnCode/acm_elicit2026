@@ -24,6 +24,8 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Hackathon build: sign release with debug key so it's installable without a keystore
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

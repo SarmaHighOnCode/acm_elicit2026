@@ -46,6 +46,8 @@ Read `../PROTOCOL.md` and `../POWER.md` before B2.
 | B7 | Mesh screen | the responder UI |
 | B8 | Mesh Lab | scale demo — **cut this first if short on time** |
 | B9 | two-section UX | SOS + Help others shell, circular SOS button |
+| B10 | discovery latency | attentive mode — SOS picked up in seconds, not minutes |
+| B11 | responder accuracy | own-SOS filter, real GPS quality, compass-rotating map |
 
 ### Gate G3 decides the project
 
@@ -108,7 +110,9 @@ advertise, or decide when to scan — those are routing decisions and they live 
 
 ## Rules
 
-1. **`:app` owns only `app/`.** Do not edit `core/` or `sim/`.
+1. **`:app` owns only `app/`.** Do not edit `core/` or `sim/`. The one exception is
+   [`B10`](B10-discovery-latency.md), which fixes a scheduling defect and therefore has to
+   change `:core` scheduling; it still leaves the frozen contract below untouched.
 2. **No routing logic in `app/`.** If you are writing dedup, priority ordering, or TTL handling,
    it belongs in `:core` — flag it instead.
 3. **AGP 9 has built-in Kotlin.** Do **not** apply `org.jetbrains.kotlin.android`. Do **not** use

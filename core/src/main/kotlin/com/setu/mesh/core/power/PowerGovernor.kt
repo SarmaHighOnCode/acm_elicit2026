@@ -54,6 +54,13 @@ class PowerGovernor(
         charging: Boolean,
         neighbours: List<NeighbourEnergy>,
         nowMillis: Long,
+        /**
+         * Requests near-continuous listening for latency-sensitive stretches (see
+         * `docs/POWER.md` §2, "Attentive mode"). A request, not a guarantee: refused below
+         * [ATTENTIVE_MIN_BATTERY_PERCENT] unless charging, and always refused in last gasp,
+         * so the low-battery survival story this whole file exists to tell is untouched.
+         */
+        attentive: Boolean = false,
     ): RadioPlan {
         val epoch = scheduler.epochIndex(nowMillis)
 
@@ -74,6 +81,8 @@ class PowerGovernor(
 
         val tier = PowerTier.forBattery(batteryPercent, charging)
 
+        val attentiveHonoured = attentive && (charging || batteryPercent >= ATTENTIVE_MIN_BATTERY_PERCENT)
+
         val scans = tier.scans &&
             scheduler.scansInEpoch(epoch, tier) &&
             ScannerElection.shouldScan(selfId, batteryPercent, charging, neighbours, epoch, tuning.scannerBandSizePercent)
@@ -81,11 +90,15 @@ class PowerGovernor(
         return RadioPlan(
             tier = tier,
             beaconIntervalMillis = tier.beaconIntervalMillis,
-            scanThisEpoch = scans,
-            scanWindowMillis = if (scans) tier.scanWindowMillis else 0L,
+            scanThisEpoch = attentiveHonoured || scans,
+            scanWindowMillis = when {
+                attentiveHonoured -> ATTENTIVE_SCAN_WINDOW_MILLIS
+                scans -> tier.scanWindowMillis
+                else -> 0L
+            },
             mayOpenConnections = tier.mayOpenConnections,
             lastGasp = false,
-            inRendezvousWindow = scheduler.isInWindow(nowMillis),
+            inRendezvousWindow = attentiveHonoured || scheduler.isInWindow(nowMillis),
         )
     }
 
@@ -103,5 +116,22 @@ class PowerGovernor(
 
         /** Deliberately aggressive: this burst is meant to be heard, not to last. */
         const val LAST_GASP_BEACON_INTERVAL_MILLIS = 250L
+
+        /**
+         * A phone at 12% behaves exactly as it does today: no attentive mode. This guard is
+         * what keeps every low-battery survival claim in `docs/POWER.md` true even after this
+         * feature exists. Charging bypasses it entirely -- gaining energy makes the spend free.
+         */
+        const val ATTENTIVE_MIN_BATTERY_PERCENT = 20
+
+        /**
+         * Attentive mode gets its duty cycle from window *length*, not call frequency, because
+         * Android throttles `startScan` calls (5 per rolling 30s), not scan duration. 12s means
+         * one `startScan` every ~12s -- 2.5 calls per 30s, comfortably under the limit -- while
+         * the node is listening essentially the whole time it isn't doing something else. A
+         * shorter window looping faster would hit the throttle and go silently, invisibly deaf;
+         * see `BleScanner.MIN_SCAN_START_GAP_MILLIS` and `docs/POWER.md` §2.
+         */
+        const val ATTENTIVE_SCAN_WINDOW_MILLIS = 12_000L
     }
 }

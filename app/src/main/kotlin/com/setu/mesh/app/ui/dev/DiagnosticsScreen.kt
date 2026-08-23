@@ -19,14 +19,17 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.Alignment
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -66,6 +69,9 @@ fun DiagnosticsScreen() {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.height(24.dp))
+
+            RadioStatus()
             Spacer(Modifier.height(24.dp))
 
             MeshControls()
@@ -309,3 +315,54 @@ private fun ScannerTestControls() {
         Text("Throttle test (10x in 20s)", color = MaterialTheme.colorScheme.onSurface)
     }
 }
+
+
+/**
+ * What the radio is doing right now, for range testing.
+ *
+ * TX power is the single most common explanation for a disappointing range test, and it is not
+ * a constant: it is tied to the power tier, so only BRIDGE (>60% battery, or charging) shouts at
+ * HIGH. A phone at 45% is on MEDIUM -- roughly 8 dB down, which is something like 2.5x less
+ * range -- and nothing in the main UI would tell you that.
+ *
+ * Polled rather than collected: `advertiseTxPowerDescription()` reads through to the live
+ * advertiser and there is no flow behind it to observe.
+ */
+@Composable
+private fun RadioStatus() {
+    val snapshot by SetuService.snapshot.collectAsState()
+    var txDescription by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            txDescription = SetuService.advertiseTxPowerDescription()
+            delay(RADIO_STATUS_REFRESH_MILLIS)
+        }
+    }
+
+    Text(
+        text = "Radio right now",
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.primary,
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        // No fabricated defaults: when the mesh is not running or the radio has not confirmed a
+        // start yet, say so rather than showing a plausible-looking figure.
+        text = txDescription ?: "Not advertising yet -- start the mesh, or the radio has not confirmed a start.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface,
+    )
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = snapshot?.let {
+            "Tier ${it.tier} · battery ${it.batteryPercent}% · " +
+                (if (it.attentive) "attentive (near-continuous scan)" else "scheduled scan windows") +
+                " · ${it.neighbourCount} nearby"
+        } ?: "Mesh not running",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+private const val RADIO_STATUS_REFRESH_MILLIS = 1_000L

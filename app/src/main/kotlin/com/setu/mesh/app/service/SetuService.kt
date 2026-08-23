@@ -196,6 +196,8 @@ class SetuService : LifecycleService() {
         androidNodeHost = host
         androidLink = link
         meshNode = node
+        // The UI may already have asked for attentive mode before this node existed.
+        node.setAttentive(attentiveRequested)
         _snapshot.value = null
 
         meshJob = scope.launch { node.run() }
@@ -510,16 +512,80 @@ class SetuService : LifecycleService() {
             runningInstance?.androidNodeHost?.setBatteryOverride(percent)
         }
 
+        /** No-op when the mesh is not running. */
+        fun setAttentive(active: Boolean) {
+            attentiveRequested = active
+            runningInstance?.meshNode?.setAttentive(active)
+        }
+
+        /**
+         * Latched here, not merely forwarded. On a cold start `MainActivity.onStart()` runs
+         * before the user has granted permissions and therefore before the mesh node exists, so
+         * a plain forward is dropped on the floor -- and the node then sits un-attentive, at the
+         * slow one-scan-per-epoch duty cycle, until the app happens to be backgrounded and
+         * reopened. [startMesh] reads this when it builds the node.
+         */
+        @Volatile
+        private var attentiveRequested: Boolean = false
+
+        /**
+         * Smoothed radio signal strength for [originRaw], or null when that origin has not been
+         * heard first-hand recently -- which includes every report that arrived via a relay.
+         * Null means "unknown", never "far": see `MeshNode.directSignalDbm`.
+         */
+        fun directSignalDbm(originRaw: Int): Int? =
+            runningInstance?.meshNode?.directSignalDbm(originRaw)
+
+        /**
+         * How hard this phone is currently shouting, as the radio reported it back.
+         *
+         * The dBm figures are the **nominal** values Android documents for each
+         * `ADVERTISE_TX_POWER_*` constant, not a measurement -- legacy advertising only reports
+         * which constant took effect, and the actual radiated power depends on the controller
+         * and the antenna. Labelled as nominal wherever it is shown, for that reason.
+         */
+        fun advertiseTxPowerDescription(): String? {
+            val settings = runningInstance?.androidLink?.advertiseSettingsInEffect?.value ?: return null
+            val (label, nominalDbm) = when (settings.txPowerLevel) {
+                AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW -> "ULTRA_LOW" to -21
+                AdvertiseSettings.ADVERTISE_TX_POWER_LOW -> "LOW" to -15
+                AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM -> "MEDIUM" to -7
+                AdvertiseSettings.ADVERTISE_TX_POWER_HIGH -> "HIGH" to 1
+                else -> "UNKNOWN" to 0
+            }
+            val mode = when (settings.mode) {
+                AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY -> "LOW_LATENCY"
+                AdvertiseSettings.ADVERTISE_MODE_BALANCED -> "BALANCED"
+                AdvertiseSettings.ADVERTISE_MODE_LOW_POWER -> "LOW_POWER"
+                else -> "UNKNOWN"
+            }
+            return "TX $label (~$nominalDbm dBm nominal) · mode $mode"
+        }
+
         /** Everything this node is currently carrying, for the responder view. Empty if not running. */
         fun carriedMessages(): List<com.setu.mesh.core.model.SosBeacon> =
             runningInstance?.meshNode?.carriedMessages() ?: emptyList()
 
         /**
-         * This device's own last GPS fix, for the responder map to plot relative to. Not on
-         * `NodeSnapshot` -- that type is `:core` and has no reason to carry raw position, since
-         * `MeshNode` itself only ever needs it indirectly through `NodeHost`.
+         * This device's own last fix, accuracy and age included, for the responder map's footer
+         * and the SOS screen's fix-quality line. Not on `NodeSnapshot` -- that type is `:core`
+         * and has no reason to carry display-only accuracy, since `MeshNode` itself only ever
+         * needs the point through `NodeHost.position()`.
+         *
+         * Do not wire a new fix arriving here into an automatic re-send of an outstanding SOS to
+         * "correct" its position. The seen-set dedups on `MessageId`, so a beacon reusing the
+         * same id is silently suppressed by every peer that already relayed it -- the correction
+         * never reaches anyone. Minting a fresh id instead puts two live SOS from one person into
+         * a mesh whose whole design goal is to conserve airtime. The only sanctioned resend path
+         * is the existing one in `SosScreen` (edit triage, resend), which is a deliberate user
+         * action, not something a background fix update should ever trigger on its own.
          */
-        fun selfPosition(): com.setu.mesh.core.model.GeoPoint? =
-            runningInstance?.androidNodeHost?.position()
+        fun selfFix(): SelfFix? = runningInstance?.androidNodeHost?.lastFix()
+
+        /**
+         * This device's own last GPS fix, for the responder map to plot relative to. Reimplemented
+         * on top of [selfFix] so there is one source of truth for "what is my position".
+         */
+        fun selfPosition(): com.setu.mesh.core.model.GeoPoint? = selfFix()?.point
     }
 }

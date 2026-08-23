@@ -5,6 +5,7 @@ import com.setu.mesh.core.link.LinkEvent
 import com.setu.mesh.core.link.PeerHandle
 import com.setu.mesh.core.model.*
 import com.setu.mesh.core.power.PowerGovernor
+import com.setu.mesh.core.power.PowerTier
 import com.setu.mesh.core.routing.RelayDecision
 import com.setu.mesh.core.routing.SuppressReason
 import com.setu.mesh.core.support.FakeHost
@@ -44,6 +45,40 @@ class MeshNodeTest {
         val decoded = BeaconCodec.decode(beacons[0])
         assertNotNull(decoded)
         assertEquals(messageId, decoded!!.messageId)
+    }
+
+    @Test
+    fun `resending an SOS replaces the previous one instead of accumulating`() {
+        val node = MeshNode(NodeId(1), FakeLink(), FakeHost(battery = 90), random = Random(0))
+
+        val first = node.originateSos(SituationFlags(severity = Severity.HIGH), souls = 1)
+        assertEquals(1, node.snapshot.value.carrying)
+
+        // Every triage toggle on the SOS screen calls through to here. Before this was fixed,
+        // each one left another own-copy behind: own entries are exempt from both purgeStale
+        // and evictOne, so the carried count climbed forever and the outbox grew past capacity.
+        val second = node.originateSos(SituationFlags(severity = Severity.CRITICAL), souls = 4)
+        val third = node.originateSos(SituationFlags(severity = Severity.CRITICAL), souls = 5)
+
+        assertNotEquals(first, second)
+        assertNotEquals(second, third)
+        assertEquals(1, node.snapshot.value.carrying)
+
+        val own = node.snapshot.value.ownSos
+        assertNotNull(own)
+        assertEquals(5, own!!.souls)
+        assertEquals(Severity.CRITICAL, own.flags.severity)
+        assertEquals(listOf(third), node.carriedMessages().map { it.messageId })
+    }
+
+    @Test
+    fun `many resends never grow the outbox past one own message`() {
+        val node = MeshNode(NodeId(1), FakeLink(), FakeHost(battery = 90), random = Random(0))
+
+        repeat(50) { i -> node.originateSos(SituationFlags(severity = Severity.HIGH), souls = i + 1) }
+
+        assertEquals(1, node.snapshot.value.carrying)
+        assertEquals(50, node.snapshot.value.ownSos?.souls)
     }
 
     @Test
@@ -147,12 +182,36 @@ class MeshNodeTest {
     @Test
     fun `beaconsToAdvertise rotates when slots less than outbox size`() {
         val link = FakeLink()
-        val host = FakeHost()
+        // Charging at 100% pins the forwarding policy to a probability of exactly 1.0 (energy
+        // gate, altruism gradient and density damping all at their maximum), so the two relays
+        // below are deterministic. This test is about the carousel, not about probabilistic
+        // forwarding.
+        val host = FakeHost(battery = 100, charging = true)
         val node = MeshNode(NodeId(1), link, host, random = Random(1)) // seed 1
 
-        val msg1 = node.originateSos(SituationFlags(severity = Severity.LOW), 1)
-        val msg2 = node.originateSos(SituationFlags(severity = Severity.HIGH), 1)
-        val msg3 = node.originateSos(SituationFlags(severity = Severity.CRITICAL), 1)
+        // One own SOS plus two messages carried for other people. This used to be three
+        // originateSos calls, which only ever produced three entries because a resend leaked
+        // its superseded copy into the outbox -- the bug covered by
+        // `resending an SOS replaces the previous one instead of accumulating`. A genuine
+        // three-entry outbox is one own message and two being relayed.
+        node.originateSos(SituationFlags(severity = Severity.LOW), 1)
+        listOf(201, 202).forEach { id ->
+            val heard = SosBeacon(
+                type = MessageType.SOS,
+                ttl = 7,
+                hops = 0,
+                messageId = MessageId(id),
+                origin = NodeId(id),
+                position = GeoPoint.of(0.0, 0.0),
+                epochMinute = 0,
+                flags = SituationFlags(severity = Severity.CRITICAL),
+                souls = 1,
+                originBattery = 20,
+            )
+            val decision = node.onBeaconHeard(BeaconCodec.encode(heard), PeerHandle("p$id"), host.nowMillis())
+            assertTrue(decision is RelayDecision.Relay, "relay must be deterministic here, got $decision")
+        }
+        assertEquals(3, node.snapshot.value.carrying)
 
         val slots = 2
         
@@ -172,5 +231,86 @@ class MeshNodeTest {
         assertNotEquals(set1, set2)
         val allSeen = set1 + set2
         assertEquals(3, allSeen.size)
+    }
+
+    // ---------------------------------------------------------------- attentive mode (B10)
+
+    @Test
+    fun `originateSos leaves the node attentive until ATTENTIVE_AFTER_SOS_MILLIS later`() {
+        val link = FakeLink()
+        val host = FakeHost()
+        val node = MeshNode(NodeId(1), link, host)
+
+        val now = host.nowMillis()
+        node.originateSos(SituationFlags(), 1, now)
+
+        // Mirrors MeshNode's private ATTENTIVE_AFTER_SOS_MILLIS; there is no public handle to
+        // the constant itself, so the boundary is asserted through planNow()'s output instead.
+        val attentiveAfterSosMillis = 120_000L
+
+        assertEquals(
+            PowerGovernor.ATTENTIVE_SCAN_WINDOW_MILLIS,
+            node.planNow(now).scanWindowMillis,
+            "expected attentive scan window immediately after originating an SOS",
+        )
+        assertNotEquals(
+            PowerGovernor.ATTENTIVE_SCAN_WINDOW_MILLIS,
+            node.planNow(now + attentiveAfterSosMillis + 1).scanWindowMillis,
+            "expected attentive mode to have lapsed just past ATTENTIVE_AFTER_SOS_MILLIS",
+        )
+    }
+
+    @Test
+    fun `hearing an SOS beacon makes the node attentive, RECEIPT and SAFE do not`() {
+        val link = FakeLink()
+        val host = FakeHost()
+        val now = host.nowMillis()
+
+        val sosNode = MeshNode(NodeId(1), link, host)
+        sosNode.onBeaconHeard(BeaconCodec.encode(testBeacon(500, MessageType.SOS)), PeerHandle("A"), now)
+        assertEquals(
+            PowerGovernor.ATTENTIVE_SCAN_WINDOW_MILLIS,
+            sosNode.planNow(now).scanWindowMillis,
+            "expected attentive scan window after hearing a neighbour's SOS",
+        )
+
+        val receiptNode = MeshNode(NodeId(2), link, host)
+        receiptNode.onBeaconHeard(BeaconCodec.encode(testBeacon(501, MessageType.RECEIPT)), PeerHandle("A"), now)
+        assertEquals(
+            PowerTier.BRIDGE.scanWindowMillis,
+            receiptNode.planNow(now).scanWindowMillis,
+            "a RECEIPT should not trigger attentive mode",
+        )
+
+        val safeNode = MeshNode(NodeId(3), link, host)
+        safeNode.onBeaconHeard(BeaconCodec.encode(testBeacon(502, MessageType.SAFE)), PeerHandle("A"), now)
+        assertEquals(
+            PowerTier.BRIDGE.scanWindowMillis,
+            safeNode.planNow(now).scanWindowMillis,
+            "a SAFE should not trigger attentive mode",
+        )
+    }
+
+    @Test
+    fun `setAttentive(true) holds regardless of elapsed time until setAttentive(false)`() {
+        val link = FakeLink()
+        val host = FakeHost()
+        val node = MeshNode(NodeId(1), link, host)
+
+        node.setAttentive(true)
+        val now = host.nowMillis()
+
+        assertEquals(PowerGovernor.ATTENTIVE_SCAN_WINDOW_MILLIS, node.planNow(now).scanWindowMillis)
+        // Far past any SOS-triggered window -- setAttentive(true) never expires on its own.
+        assertEquals(
+            PowerGovernor.ATTENTIVE_SCAN_WINDOW_MILLIS,
+            node.planNow(now + 10 * 60_000L).scanWindowMillis,
+        )
+
+        node.setAttentive(false)
+        assertNotEquals(
+            PowerGovernor.ATTENTIVE_SCAN_WINDOW_MILLIS,
+            node.planNow(now + 10 * 60_000L).scanWindowMillis,
+        )
     }
 }

@@ -24,6 +24,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.setu.mesh.app.service.SetuService
 import com.setu.mesh.app.ui.MeshScreen
 import com.setu.mesh.app.ui.SosScreen
 import com.setu.mesh.app.ui.dev.DeveloperScreen
@@ -38,6 +39,19 @@ class MainActivity : ComponentActivity() {
                 SetuApp()
             }
         }
+    }
+
+    // Plain Activity callbacks, not a Compose LifecycleEventObserver: there is no
+    // lifecycle-runtime-compose in the version catalog, and LocalLifecycleOwner has moved
+    // packages between Compose versions -- not worth the risk for what is otherwise two lines.
+    override fun onStart() {
+        super.onStart()
+        SetuService.setAttentive(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        SetuService.setAttentive(false)
     }
 }
 

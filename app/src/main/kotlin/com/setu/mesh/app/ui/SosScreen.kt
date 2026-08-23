@@ -32,6 +32,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -45,17 +46,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.setu.mesh.app.service.SelfFix
 import com.setu.mesh.app.service.SetuService
 import com.setu.mesh.app.ui.components.StatusLadder
 import com.setu.mesh.app.ui.components.TierBadge
+import com.setu.mesh.app.ui.components.formatSelfFixLine
 import com.setu.mesh.app.ui.theme.SafeHopShapes
 import com.setu.mesh.app.ui.theme.neumorphic
 import com.setu.mesh.core.engine.NodeSnapshot
+import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SituationFlags
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 /**
  * The screen a stranded person uses. Design constraint: they are panicking, possibly
@@ -91,6 +97,22 @@ fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
     // Single source of truth: the node either holds an outstanding own SOS or it does not.
     val sosActive = snapshot?.ownSos != null
 
+    // Also derived from the protocol, not mirrored: the outstanding beacon's own `position`
+    // field is exactly what went out on the radio (see MeshNode.originateSos), so "did my SOS
+    // carry a location" reads directly from it rather than from a separately tracked flag that
+    // could desync the same way `sosActive` used to.
+    val ownSosMissingPosition = snapshot?.ownSos?.let { it.position == GeoPoint.UNKNOWN } ?: false
+
+    // Polled rather than pushed for the same reason MeshViewModel polls carriedMessages(): the
+    // fix has no flow of its own, only a getter, so a timer is what makes "3 s ago" keep counting.
+    var selfFix by remember { mutableStateOf<SelfFix?>(null) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            selfFix = SetuService.selfFix()
+            delay(SELF_FIX_POLL_INTERVAL_MILLIS)
+        }
+    }
+
     fun flags() = SituationFlags(
         severity = severity,
         trapped = trapped,
@@ -117,11 +139,13 @@ fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
 
             Column(modifier = Modifier.fillMaxSize()) {
                 Header(snapshot = snapshot, onDeveloperEntry = onDeveloperEntry)
+                SelfFixLine(selfFix)
 
                 if (isShort) {
                     Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
                         FixedSosRegion(
                             sosActive = sosActive,
+                            ownSosMissingPosition = ownSosMissingPosition,
                             onSend = { SetuService.originateSos(flags(), souls) },
                             onMarkSafe = { SetuService.markSafe() },
                             modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -147,6 +171,7 @@ fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
                     // control are always reachable without scrolling, at any screen size.
                     FixedSosRegion(
                         sosActive = sosActive,
+                        ownSosMissingPosition = ownSosMissingPosition,
                         onSend = { SetuService.originateSos(flags(), souls) },
                         onMarkSafe = { SetuService.markSafe() },
                         modifier = Modifier.fillMaxWidth().weight(1f),
@@ -184,6 +209,7 @@ fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
 @Composable
 private fun FixedSosRegion(
     sosActive: Boolean,
+    ownSosMissingPosition: Boolean,
     onSend: () -> Unit,
     onMarkSafe: () -> Unit,
     modifier: Modifier = Modifier,
@@ -192,8 +218,10 @@ private fun FixedSosRegion(
         modifier = modifier,
         contentAlignment = Alignment.Center,
     ) {
+        val showMissingLocationWarning = sosActive && ownSosMissingPosition
         val reservedForSafeControl = if (sosActive) SAFE_CONTROL_RESERVED_HEIGHT else 0.dp
-        val availableHeight = (maxHeight - reservedForSafeControl).coerceAtLeast(0.dp)
+        val reservedForMissingLocation = if (showMissingLocationWarning) MISSING_LOCATION_RESERVED_HEIGHT else 0.dp
+        val availableHeight = (maxHeight - reservedForSafeControl - reservedForMissingLocation).coerceAtLeast(0.dp)
         val diameter = (minOf(maxWidth, availableHeight) * SOS_BUTTON_SIZE_FRACTION)
             .coerceIn(SOS_BUTTON_MIN_DIAMETER, SOS_BUTTON_MAX_DIAMETER)
 
@@ -203,6 +231,18 @@ private fun FixedSosRegion(
                 diameter = diameter,
                 onSend = onSend,
             )
+            if (showMissingLocationWarning) {
+                // Prominent and in the fixed region on purpose -- this is the one fact a victim
+                // most needs to know right after tapping SOS, and it must never be scrolled out
+                // of view the way a line buried in the triage section could be.
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "Sent without location — still searching for GPS",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
             if (sosActive) {
                 Spacer(Modifier.height(20.dp))
                 MarkSafeButton(onClick = onMarkSafe)
@@ -289,6 +329,22 @@ private fun Header(snapshot: NodeSnapshot?, onDeveloperEntry: () -> Unit) {
                 onClick = {},
                 onLongClick = onDeveloperEntry,
             ),
+    )
+}
+
+/**
+ * Compact fix-quality line, same wording as the responder map's footer (see
+ * [com.setu.mesh.app.ui.components.formatSelfFixLine]) -- so a victim can tell at a glance
+ * whether their SOS is carrying a real position before they even tap send. Real values only:
+ * no fix reads as "none yet", never a guess.
+ */
+@Composable
+private fun SelfFixLine(selfFix: SelfFix?) {
+    Text(
+        text = formatSelfFixLine(selfFix, System.currentTimeMillis()),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 20.dp),
     )
 }
 
@@ -398,7 +454,9 @@ private fun TriageControls(
                     label = {
                         Text(
                             text = value.name.lowercase(Locale.US).replaceFirstChar { it.uppercase() },
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     },
                     modifier = Modifier
@@ -443,7 +501,9 @@ private fun TriageControls(
 
     NeumorphicSection {
         ToggleRow("Trapped", trapped, onTrapped)
+        Spacer(Modifier.height(8.dp))
         ToggleRow("Medical need", medicalNeed, onMedical)
+        Spacer(Modifier.height(8.dp))
         ToggleRow("Water rising", waterRising, onWater)
     }
 }
@@ -493,6 +553,7 @@ private fun ToggleRow(label: String, checked: Boolean, onToggle: () -> Unit) {
             .height(56.dp)
             .neumorphic(cornerRadius = 12.dp, elevation = 4.dp, pressed = pressed)
             .clickable(interactionSource = interactionSource, indication = null, onClick = onToggle)
+            .padding(horizontal = 12.dp)
             .semantics { contentDescription = "$label, ${if (checked) "on" else "off"}" },
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -543,3 +604,12 @@ private val SOS_BUTTON_MAX_DIAMETER = 260.dp
 // Spacer (20dp) + MarkSafeButton (48dp min height) below the circle when sosActive -- held out
 // of the button's own share of the fixed region so the two never compete for the same space.
 private val SAFE_CONTROL_RESERVED_HEIGHT = 68.dp
+
+// Spacer (12dp) + the "sent without location" line, held out of the button's share the same way
+// SAFE_CONTROL_RESERVED_HEIGHT is, for the same reason.
+private val MISSING_LOCATION_RESERVED_HEIGHT = 44.dp
+
+// GPS fixes arrive at most once a second (AndroidNodeHost); polling faster would just repaint
+// the same age in seconds, and polling this screen's fix independently of MeshViewModel's is
+// what keeps "3 s ago" counting even when Help others isn't the visible tab.
+private const val SELF_FIX_POLL_INTERVAL_MILLIS = 1_000L
