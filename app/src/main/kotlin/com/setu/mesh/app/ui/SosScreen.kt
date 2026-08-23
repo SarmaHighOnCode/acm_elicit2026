@@ -1,6 +1,8 @@
 package com.setu.mesh.app.ui
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -43,12 +46,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import com.setu.mesh.app.gateway.SosSummary
 import com.setu.mesh.app.service.SelfFix
 import com.setu.mesh.app.service.SetuService
 import com.setu.mesh.app.ui.components.StatusLadder
@@ -60,8 +72,10 @@ import com.setu.mesh.core.engine.NodeSnapshot
 import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.Severity
 import com.setu.mesh.core.model.SituationFlags
+import com.setu.mesh.core.model.SosBeacon
 import java.util.Locale
 import kotlinx.coroutines.delay
+import android.graphics.Color as AndroidColor
 
 /**
  * The screen a stranded person uses. Design constraint: they are panicking, possibly
@@ -153,6 +167,7 @@ fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
                         ScrollingTriageRegion(
                             snapshot = snapshot,
                             sosActive = sosActive,
+                            ownSosMissingPosition = ownSosMissingPosition,
                             severity = severity,
                             souls = souls,
                             trapped = trapped,
@@ -179,6 +194,7 @@ fun SosScreen(onDeveloperEntry: () -> Unit = {}) {
                     ScrollingTriageRegion(
                         snapshot = snapshot,
                         sosActive = sosActive,
+                        ownSosMissingPosition = ownSosMissingPosition,
                         severity = severity,
                         souls = souls,
                         trapped = trapped,
@@ -255,6 +271,7 @@ private fun FixedSosRegion(
 private fun ScrollingTriageRegion(
     snapshot: NodeSnapshot?,
     sosActive: Boolean,
+    ownSosMissingPosition: Boolean,
     severity: Severity,
     souls: Int,
     trapped: Boolean,
@@ -305,7 +322,95 @@ private fun ScrollingTriageRegion(
             Spacer(Modifier.height(24.dp))
             EnergySummary(snapshot)
         }
+
+        // Below EnergySummary, inside the scroll region: this card is dense (a QR plus its own
+        // text) and would crowd the fixed SOS button region if it lived there instead. Reads
+        // straight off snapshot.ownSos, same as everything else on this screen -- there is no
+        // separately tracked "last sent beacon" to desync from it.
+        if (sosActive) {
+            snapshot?.ownSos?.let { beacon ->
+                Spacer(Modifier.height(24.dp))
+                SosQrCard(beacon = beacon, missingPosition = ownSosMissingPosition)
+            }
+        }
     }
+}
+
+/**
+ * A scannable "last known state" card: a responder with no app, no mesh, and no signal can still
+ * point a stock camera at this phone and get the victim's last severity/souls/flags/position.
+ * Black-on-white on an explicit white surface regardless of app theme -- a dark-themed QR with
+ * inverted colours fails to scan on many readers, which would make this card actively harmful in
+ * exactly the situation it exists for.
+ */
+@Composable
+private fun SosQrCard(beacon: SosBeacon, missingPosition: Boolean) {
+    // Keyed on the beacon itself (a data class, so equality follows content): any change to
+    // position, flags, souls or hops is a genuinely new "last known state" and must regenerate
+    // both the payload and the bitmap. `nowMillis` is *not* re-read on every recomposition --
+    // it is captured once per distinct beacon, which is what keeps this in step with
+    // `remember(payload)` below instead of defeating that cache on every frame.
+    val payload = remember(beacon) { SosSummary.qrPayload(beacon, System.currentTimeMillis()) }
+
+    val qrSizePx = with(LocalDensity.current) { QR_SIZE_DP.roundToPx() }
+    val qrBitmap = remember(payload, qrSizePx) { encodeQrBitmap(payload, qrSizePx) }
+
+    NeumorphicSection {
+        Text(
+            text = "Last known state",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "A responder can scan this with any camera -- no app, mesh, or signal needed.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterHorizontally)
+                .background(Color.White, RoundedCornerShape(SafeHopShapes.cornerSmall))
+                .padding(QR_QUIET_PADDING),
+        ) {
+            Image(
+                bitmap = qrBitmap,
+                contentDescription = "QR code encoding this SOS's last known state",
+                modifier = Modifier.size(QR_SIZE_DP),
+            )
+        }
+        if (missingPosition) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "No GPS fix yet -- this code has no location line.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * ZXing produces a [com.google.zxing.common.BitMatrix] of on/off bits; Compose wants an
+ * [ImageBitmap]. `ErrorCorrectionLevel.M` and an explicit margin (quiet zone) are both required
+ * for reliable scanning -- a code with no quiet zone fails against a camera that can't tell where
+ * it ends, and `L` (the zxing default) leaves too little redundancy for a phone screen photographed
+ * at an angle, which is the realistic scanning condition for this card, not a flat printout.
+ */
+private fun encodeQrBitmap(text: String, sizePx: Int): ImageBitmap {
+    val hints = mapOf(
+        EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+        EncodeHintType.MARGIN to QR_QUIET_ZONE_MODULES,
+    )
+    val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
+    val pixels = IntArray(sizePx * sizePx)
+    for (y in 0 until sizePx) {
+        for (x in 0 until sizePx) {
+            pixels[y * sizePx + x] = if (matrix.get(x, y)) AndroidColor.BLACK else AndroidColor.WHITE
+        }
+    }
+    return Bitmap.createBitmap(pixels, sizePx, sizePx, Bitmap.Config.ARGB_8888).asImageBitmap()
 }
 
 /**
@@ -613,3 +718,19 @@ private val MISSING_LOCATION_RESERVED_HEIGHT = 44.dp
 // the same age in seconds, and polling this screen's fix independently of MeshViewModel's is
 // what keeps "3 s ago" counting even when Help others isn't the visible tab.
 private const val SELF_FIX_POLL_INTERVAL_MILLIS = 1_000L
+
+// -- SOS QR card ----------------------------------------------------------------------------
+// Large enough to stay scannable when the responder's camera is a metre or two away rather than
+// pressed against the screen, small enough to stay well inside the scrolling region's width on
+// the smallest phones this targets.
+private val QR_SIZE_DP = 220.dp
+
+// Padding around the code on its white surface, so the quiet zone the encoder itself reserves
+// (QR_QUIET_ZONE_MODULES) isn't the only whitespace between the code and a card background that,
+// in dark mode, would otherwise sit right at the code's edge.
+private val QR_QUIET_PADDING = 16.dp
+
+// zxing's own MARGIN hint, in QR modules (not dp) -- the standard minimum quiet zone is 4
+// modules; camera decoders that assume a printed code with no other context routinely fail below
+// that regardless of how large the code itself is rendered.
+private const val QR_QUIET_ZONE_MODULES = 4

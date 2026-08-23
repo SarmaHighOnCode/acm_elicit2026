@@ -2,6 +2,8 @@ package com.setu.mesh.app.gateway
 
 import com.setu.mesh.core.model.GeoPoint
 import com.setu.mesh.core.model.SosBeacon
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 /**
  * One place to describe an SOS in text. SMS, the WhatsApp pre-fill, and the QR "last known
@@ -66,6 +68,38 @@ object SosSummary {
      * coordinate (-214.7483648) if fed through here directly.
      */
     fun mapsUrl(position: GeoPoint): String = "https://maps.google.com/?q=${position.latitude},${position.longitude}"
+
+    /**
+     * Payload for the SOS screen's QR "last known state" card (SosScreen). Plain text, maps URL
+     * first so any phone's stock camera app offers a tappable link without needing a dedicated
+     * QR reader, then a human-readable summary underneath for a reader that only shows raw text.
+     *
+     * [nowMillis] is the moment this card was rendered, not the beacon's own `epochMinute` --
+     * this is a "here is what I can tell you right now" card, not a replay of the original send.
+     *
+     * When there is no GPS fix, [SosBeacon.position] is [GeoPoint.UNKNOWN] -- `Int.MIN_VALUE`
+     * per axis, i.e. -214.7483648 if naively formatted as degrees. The maps URL line is omitted
+     * entirely in that case rather than ever putting that sentinel in front of a rescuer as a
+     * real coordinate.
+     */
+    fun qrPayload(beacon: SosBeacon, nowMillis: Long): String = buildString {
+        if (beacon.position != GeoPoint.UNKNOWN) {
+            append(mapsUrl(beacon.position))
+        } else {
+            append("Location: unknown")
+        }
+        append('\n')
+        append("SafeHop SOS ").append(beacon.messageId.short()).append('\n')
+        append("Severity: ").append(beacon.flags.severity).append('\n')
+        append("People: ").append(beacon.souls).append('\n')
+        val flags = flagLabels(beacon)
+        append("Flags: ").append(if (flags.isEmpty()) "none" else flags.joinToString(", ")).append('\n')
+        append("From: ").append(beacon.origin.short()).append('\n')
+        append("Time: ").append(isoUtc(nowMillis))
+    }
+
+    private fun isoUtc(millis: Long): String =
+        Instant.ofEpochMilli(millis).truncatedTo(ChronoUnit.SECONDS).toString()
 
     private fun locationSuffix(beacon: SosBeacon): String =
         if (beacon.position != GeoPoint.UNKNOWN) " @ ${beacon.position.latitude},${beacon.position.longitude}" else ""

@@ -10,6 +10,7 @@ activityCompose = "1.13.0"
 lifecycle = "2.11.0"
 composeBom = "2026.08.00"     # -> Compose 1.12.0 / Material3 1.4.0, needs compileSdk 37
 junit = "5.11.4"
+zxing = "3.5.3"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -29,6 +30,9 @@ compose-material3 = { module = "androidx.compose.material3:material3" }
 
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+
+# Pure Java, no Android deps -- safe to use directly from a Compose screen for the SOS QR card.
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
