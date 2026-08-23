@@ -6,6 +6,8 @@ Hacks 11.0 — Problem Statement #15, Disaster Management.
 Every phone running SafeHop is one hop in a chain that gets a message out — one span of a bridge
 built from strangers' phones.
 
+**Live demo & APK download: [safehop.strawhats.co.in](https://safehop.strawhats.co.in/)**
+
 ---
 
 ## The problem
@@ -226,14 +228,16 @@ This is an active hackathon build. Honest state:
 |------|-------|
 | 24-byte beacon codec + CRC-8 | implemented, compiling |
 | Seen-set dedup, outbox, carousel ordering | implemented |
-| Energy-aware forwarding policy | implemented |
-| Power tiers, rendezvous, scanner election, ledger | implemented |
+| Energy-aware forwarding policy, reconsideration retry | implemented |
+| Power tiers, rendezvous, scanner election, ledger, attentive mode | implemented |
 | `MeshNode` engine + `Link` seam | implemented, frozen |
-| Unit tests | in progress |
-| `SimLink` + virtual world | in progress |
-| Android BLE transport (advertiser / scanner / GATT) | in progress |
-| Compose UI | in progress |
-| Measured battery numbers | **not yet — nothing quoted as measured** |
+| Unit tests (`:core`, `:sim`) | implemented, passing |
+| `SimLink` + 200-node virtual world | implemented |
+| Android BLE transport (advertiser / scanner / GATT) | implemented, verified on hardware |
+| Compose UI (SOS screen, responder map, Mesh Lab) | implemented |
+| Gateway SMS/WhatsApp fallback + scannable QR fallback card | implemented |
+| Simulator-measured energy reclaim from delivery confirmation | **55.54%**, 20-node flood scenario |
+| Per-radio-op energy costs (mAh) feeding the ledger | estimated, not yet measured on real silicon |
 
 ### Not built, on purpose
 
@@ -250,6 +254,9 @@ carry Ed25519; beacons do not. The UI must therefore distinguish an *unverified 
 ---
 
 ## Build
+
+Don't want to build from source? Grab the signed APK from
+[safehop.strawhats.co.in](https://safehop.strawhats.co.in/) and sideload it directly.
 
 Requires JDK 17, Android SDK platform 37, build-tools 36.0.0.
 
